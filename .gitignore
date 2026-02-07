@@ -1,0 +1,5 @@
+backend/node_modules/
+backend/portfolio_backend/data/
+__pycache__/
+*.py
+*.pyc
