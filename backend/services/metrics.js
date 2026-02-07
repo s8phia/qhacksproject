@@ -28,7 +28,11 @@ function resolvePythonExecutable() {
         return venvPython;
     }
 
+<<<<<<< HEAD
 <<<<<<< Updated upstream
+=======
+
+>>>>>>> fe38eaf7db7ac272c6cd44063d602f8c2399b823
     return process.platform === "win32" ? "python" : "python3";
 }
 =======
@@ -37,6 +41,7 @@ function resolvePythonExecutable() {
 }
 
 >>>>>>> Stashed changes
+
 
 function runPythonMetrics(csvPath) {
     return new Promise((resolve, reject) => {
