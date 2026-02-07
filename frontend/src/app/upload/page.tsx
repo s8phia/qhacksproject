@@ -22,12 +22,12 @@ export default function UploadPage() {
             body: formData
         });
 
-        const text = await res.text();
+        let data: any = null;
         try {
-            const obj = JSON.parse(text);
-            setResult(obj.output ?? "Upload complete");
+            data = await res.json();
+            setResult(JSON.stringify(data.metrics ?? {}, null, 2))
         } catch {
-            setResult(text);
+            setResult("Upload complete, but failed to parse metrics: " + data);
         }
 
         } catch (err: any) {

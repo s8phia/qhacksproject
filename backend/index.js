@@ -1,6 +1,5 @@
 require('dotenv').config();
-const { parseWealthsimpleCSV } = require("./services/portfolio_import/parsers/wealthsimple");
-const { transactionsToJson, writeJson } = require("./services/portfolio_import/utils/json_export");
+const { runPythonMetrics } = require("./services/metrics");
 const cors = require("cors");
 const express = require('express');
 const { analyzeBias } = require('./services/gemini');
@@ -74,37 +73,19 @@ const upload = multer({
 app.post(
   "/api/uploads/wealthsimple",
   upload.single("file"),
-  (req, res) => {
+  async (req, res) => {
 
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
-    console.log("Uploaded file:", req.file.path);
-
     try {
       const csvPath = req.file.path;
-
-      const txs = parseWealthsimpleCSV(csvPath);
-
-      const obj = transactionsToJson(txs);
-
-      // Optional: keep writing the file like before
-      const outPath = path.join(
-        __dirname,
-        "services",
-        "portfolio_import",
-        "data",
-        "out",
-        "transactions.json"
-      );
-
-      writeJson(obj, outPath);
+      const metrics = await runPythonMetrics(csvPath);
 
       res.json({
         ok: true,
         filename: req.file.filename,
-        count: txs.length,
-        data: obj
+        metrics
       });
 
     } catch (err) {
