@@ -20,9 +20,32 @@ export default function Home() {
   };
 
   //navigate to next page
-  const confirmUpload = () => {
+  const confirmUpload = async () => {
     if (!file) return;
-    router.push("/upload-confirm");
+
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const res = await fetch("http://localhost:3001/api/uploads/usertrades", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        alert(`Upload failed: ${err?.error || "Unknown error"}`);
+        return;
+      }
+
+      const data = await res.json();
+      console.log("Metrics:", data);
+
+      router.push("/select-person");
+
+    } catch (err) {
+      console.error("Upload failed", err);
+      alert("Upload failed");
+    }
   };
 
   return (
@@ -38,7 +61,7 @@ export default function Home() {
         <input
           id="csv-upload"
           type="file"
-          accept=".jpg"
+          accept=".csv"
           onChange={fileChange}
           className="hidden"
         />
