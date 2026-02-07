@@ -1,3 +1,4 @@
 backend/node_modules/
+node_modules/
 backend/portfolio_backend/data/
 __pycache__/
