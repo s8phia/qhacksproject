@@ -1,10 +1,29 @@
 const { spawn } = require("child_process");
 const path = require("path");
+const fs = require("fs");
+
+function resolvePythonExecutable() {
+    if (process.env.PYTHON_PATH) {
+        return process.env.PYTHON_PATH;
+    }
+
+    const projectRoot = path.join(__dirname, "..", "..");
+    const venvPython = process.platform === "win32"
+        ? path.join(projectRoot, ".venv", "Scripts", "python.exe")
+        : path.join(projectRoot, ".venv", "bin", "python");
+
+    if (fs.existsSync(venvPython)) {
+        return venvPython;
+    }
+
+    return process.platform === "win32" ? "python" : "python3";
+}
 
 function runPythonMetrics(csvPath) {
     return new Promise((resolve, reject) => {
         const scriptPath = path.join(__dirname, "bias_engine.py");
-        const proc = spawn("python3", [scriptPath, csvPath]);
+        const pythonExec = resolvePythonExecutable();
+        const proc = spawn(pythonExec, [scriptPath, csvPath]);
 
         let stdout = "";
         let stderr = "";
