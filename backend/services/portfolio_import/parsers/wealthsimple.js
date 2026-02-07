@@ -8,13 +8,18 @@ function parseWealthsimpleCSV(filePath) {
 
     const records = parse(fileContent, {
       columns: true,
-      skip_empty_lines: true
+      skip_empty_lines: true,
+      relax_column_count: true,
+      skip_records_with_error: true,
+      on_record: (record, context) => {
+        if (record && Object.keys(record).length > 1) return record;
+        return null;
+      }
     });
 
     const transactions = [];
 
     for (const row of records) {
-
       if (!row.symbol || !row.symbol.trim()) continue;
 
       const t = new Transaction(
@@ -30,7 +35,6 @@ function parseWealthsimpleCSV(filePath) {
     }
 
     return transactions;
-
   } catch (err) {
     throw new Error("Failed to parse Wealthsimple CSV: " + err.message);
   }

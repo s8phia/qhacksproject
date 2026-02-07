@@ -1,6 +1,6 @@
 require('dotenv').config();
-const { parseWealthsimpleCSV } = require("./portfolio_backend/src/parsers/wealthsimple");
-const { transactionsToJson, writeJson } = require("./portfolio_backend/src/utils/json_export");
+const { parseWealthsimpleCSV } = require("./services/portfolio_import/parsers/wealthsimple");
+const { transactionsToJson, writeJson } = require("./services/portfolio_import/utils/json_export");
 const cors = require("cors");
 const express = require('express');
 const { analyzeBias } = require('./services/gemini');
@@ -40,7 +40,8 @@ app.post('/api/analyze', async (req, res) => {
 
 const RAW_DIR = path.join(
   __dirname,
-  "portfolio_backend",
+  "services",
+  "portfolio_import",
   "data",
   "raw"
 );
@@ -90,7 +91,8 @@ app.post(
       // Optional: keep writing the file like before
       const outPath = path.join(
         __dirname,
-        "portfolio_backend",
+        "services",
+        "portfolio_import",
         "data",
         "out",
         "transactions.json"
