@@ -1,7 +1,9 @@
+require('dotenv').config();
 const { parseWealthsimpleCSV } = require("./portfolio_backend/src/parsers/wealthsimple");
 const { transactionsToJson, writeJson } = require("./portfolio_backend/src/utils/json_export");
 const cors = require("cors");
 const express = require('express');
+const { analyzeBias } = require('./services/gemini');
 const multer = require("multer");
 const path = require("path");
 const app = express();
@@ -13,6 +15,26 @@ app.use(express.json());
 
 app.get('/', (req, res) => {
   res.json({ message: 'Backend is running' });
+});
+
+app.post('/api/analyze', async (req, res) => {
+  const { transactions, archetype } = req.body || {};
+
+  if (!Array.isArray(transactions) || !archetype) {
+    return res.status(400).json({
+      error: 'Invalid payload. Provide transactions[] and archetype.',
+    });
+  }
+
+  try {
+    const result = await analyzeBias(transactions, archetype);
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to analyze bias.',
+      details: error?.message || 'Unknown error',
+    });
+  }
 });
 
 
