@@ -37,13 +37,7 @@ app.post('/api/analyze', async (req, res) => {
 });
 
 
-const RAW_DIR = path.join(
-  __dirname,
-  "services",
-  "portfolio_import",
-  "data",
-  "raw"
-);
+const RAW_DIR = path.join(__dirname, "uploads", "usertrades");
 
 if (!fs.existsSync(RAW_DIR)) {
   fs.mkdirSync(RAW_DIR, { recursive: true });
@@ -71,7 +65,7 @@ const upload = multer({
 });
 
 app.post(
-  "/api/uploads/wealthsimple",
+  "/api/uploads/usertrades",
   upload.single("file"),
   async (req, res) => {
 

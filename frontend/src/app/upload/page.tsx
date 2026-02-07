@@ -17,7 +17,7 @@ export default function UploadPage() {
         setResult("Uploading...");
 
         try {
-        const res = await fetch("http://localhost:3001/api/uploads/wealthsimple", {
+        const res = await fetch("http://localhost:3001/api/uploads/usertrades", {
             method: "POST",
             body: formData
         });
@@ -37,7 +37,7 @@ export default function UploadPage() {
 
     return (
         <main style={{ padding: 24 }}>
-        <h2>Upload Wealthsimple CSV</h2>
+        <h2>Upload User Trades CSV</h2>
 
         <form onSubmit={handleSubmit}>
             <input
