@@ -3,6 +3,13 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+function slugify(name: string) {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "-");
+}
+
 const PROFILES = [
   {
     name: "Warren Buffett",
@@ -55,18 +62,17 @@ export default function SelectPersonPage() {
         {filteredProfiles.map((profile) => (
           <div
             key={profile.name}
-            className="relative group flex flex-col items-center"
+            onClick={() => router.push(`/profile/${slugify(profile.name)}`)}
+            className="relative group flex flex-col items-center cursor-pointer"
           >
             <img
               src={profile.image}
               alt={profile.name}
               className="w-40 h-40 rounded-full object-cover border-2 border-black mb-2"
             />
-
             <span className="text-xl font-medium">
               {profile.name}
             </span>
-
             {/* Hover description */}
             <div
               className="
