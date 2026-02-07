@@ -2,51 +2,30 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-<<<<<<< Updated upstream
-=======
-
->>>>>>> Stashed changes
 function resolvePythonExecutable() {
     if (process.env.PYTHON_PATH) {
         return process.env.PYTHON_PATH;
     }
 
-<<<<<<< Updated upstream
-=======
-
->>>>>>> Stashed changes
     const projectRoot = path.join(__dirname, "..", "..");
     const venvPython = process.platform === "win32"
         ? path.join(projectRoot, ".venv", "Scripts", "python.exe")
         : path.join(projectRoot, ".venv", "bin", "python");
 
-<<<<<<< Updated upstream
-=======
-
->>>>>>> Stashed changes
     if (fs.existsSync(venvPython)) {
         return venvPython;
     }
 
-<<<<<<< Updated upstream
-    return process.platform === "win32" ? "python" : "python3";
-}
-=======
 
     return process.platform === "win32" ? "python" : "python3";
 }
 
->>>>>>> Stashed changes
 
 function runPythonMetrics(csvPath) {
     return new Promise((resolve, reject) => {
         const scriptPath = path.join(__dirname, "bias_engine.py");
         const pythonExec = resolvePythonExecutable();
         const proc = spawn(pythonExec, [scriptPath, csvPath]);
-<<<<<<< Updated upstream
-=======
-
->>>>>>> Stashed changes
 
         let stdout = "";
         let stderr = "";
