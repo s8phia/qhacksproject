@@ -74,6 +74,8 @@ export default function ProfilePage() {
     // 🔽 this comes from your backend now
     const [analysisResult, setAnalysisResult] = useState<any>(null);
     const [biasRatios, setBiasRatios] = useState<Record<string, number> | null>(null);
+    const [geminiAnalysis, setGeminiAnalysis] = useState<{ summary?: string; suggestions?: string[] } | null>(null);
+    const [geminiError, setGeminiError] = useState<string | null>(null);
 
     // 🔽 only for dumping / debugging
     const [rawApiData, setRawApiData] = useState<any>(null);
@@ -89,52 +91,76 @@ export default function ProfilePage() {
 
         setPersonaResult(HARDCODED_PERSONA_RADAR[slug]);
 
-        // 🔽 pull latest uploaded metrics
-        fetch("http://localhost:3001/api/uploads/usertrades")
-        .then(async (res) => {
+        const load = async () => {
+          try {
+            // pull latest uploaded metrics
+            const res = await fetch("http://localhost:3001/api/uploads/usertrades");
             if (!res.ok) {
-            throw new Error("No uploaded data yet");
+              throw new Error("No uploaded data yet");
             }
-            return res.json();
-        })
-        .then((data) => {
+            const data = await res.json();
             setRawApiData(data);
 
             const pm = data.metrics?.portfolio_metrics;
             const biasTypeRatios = data.metrics?.bias_type_ratios ?? null;
 
             if (!pm) {
-            setAnalysisResult(null);
-            setBiasRatios(biasTypeRatios);
-            return;
+              setAnalysisResult(null);
+              setBiasRatios(biasTypeRatios);
+            } else {
+              const radarData = {
+                normalizedMetrics: {
+                  trade_frequency: pm.trade_frequency_score / 100,
+                  holding_period: pm.holding_patience_score / 100,
+                  after_loss: pm.risk_reactivity_score / 100,
+
+                  // you do not currently have real backend values for these two
+                  // so we map something reasonable for now
+                  avg_trade_size: pm.consistency_score / 100,
+                  size_variability: pm.consistency_score / 100
+                }
+              };
+
+              setAnalysisResult(radarData);
+              setBiasRatios(biasTypeRatios);
             }
 
-            const radarData = {
-            normalizedMetrics: {
-                trade_frequency: pm.trade_frequency_score / 100,
-                holding_period: pm.holding_patience_score / 100,
-                after_loss: pm.risk_reactivity_score / 100,
+            // Show page immediately, don't wait for Gemini
+            setLoading(false);
 
-                // you do not currently have real backend values for these two
-                // so we map something reasonable for now
-                avg_trade_size: pm.consistency_score / 100,
-                size_variability: pm.consistency_score / 100
+            // Fetch Gemini analysis in background
+            if (data.metrics) {
+              setGeminiAnalysis(null);
+              setGeminiError(null);
+              
+              fetch("http://localhost:3001/api/analyze", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ metrics: data.metrics }),
+              })
+                .then(async (analysisRes) => {
+                  const analysisData = await analysisRes.json().catch(() => ({}));
+                  if (analysisRes.ok) {
+                    setGeminiAnalysis(analysisData);
+                  } else {
+                    setGeminiError(analysisData?.error || "Failed to generate analysis");
+                  }
+                })
+                .catch((err) => {
+                  console.error("Gemini analysis error:", err);
+                  setGeminiError(err?.message || "Failed to load analysis");
+                });
             }
-            };
-
-            setAnalysisResult(radarData);
-            setBiasRatios(biasTypeRatios);
-        })
-
-        .catch((err) => {
+          } catch (err: any) {
             console.error(err);
             setRawApiData({ error: err.message });
             setAnalysisResult(null);
             setBiasRatios(null);
-        })
-        .finally(() => {
             setLoading(false);
-        });
+          }
+        };
+
+        load();
 
     }, [slug]);
 
@@ -249,6 +275,28 @@ export default function ProfilePage() {
                     Upload data to see your bias highlight.
                 </p>
                 )}
+
+                {geminiAnalysis?.summary ? (
+                <p className="mt-3 text-sm text-gray-600">
+                    {geminiAnalysis.summary}
+                </p>
+                ) : geminiError ? (
+                <p className="mt-3 text-sm text-red-500">
+                    {geminiError}
+                </p>
+                ) : (
+                <p className="mt-3 text-sm text-gray-500 animate-pulse">
+                    Loading AI analysis...
+                </p>
+                )}
+
+                {geminiAnalysis?.suggestions?.length ? (
+                <ul className="mt-3 space-y-1 text-sm text-gray-600 list-disc pl-5">
+                    {geminiAnalysis.suggestions.map((item, idx) => (
+                    <li key={`${idx}-${item}`}>{item}</li>
+                    ))}
+                </ul>
+                ) : null}
             </div>
             </div>
         </section>

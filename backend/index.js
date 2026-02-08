@@ -101,17 +101,17 @@ app.get("/", (req, res) => {
 });
 
 app.post("/api/analyze", async (req, res) => {
-  const { transactions, archetype } = req.body || {};
+  const metrics = req.body?.metrics || lastUserTradesResult?.metrics;
 
-  if (!Array.isArray(transactions) || !archetype) {
+  if (!metrics) {
     return res.status(400).json({
-      error: "Invalid payload. Provide transactions[] and archetype.",
+      error: "Invalid payload. Provide metrics or upload a CSV first.",
     });
   }
 
   try {
-    const result = await analyzeBias(transactions, archetype);
-    return res.json(result);
+    const result = await analyzeBias(metrics);
+    return res.json({ ok: true, ...result });
   } catch (error) {
     return res.status(500).json({
       error: "Failed to analyze bias.",
