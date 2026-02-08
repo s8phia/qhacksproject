@@ -1,11 +1,61 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const dotenv = require("dotenv");
-dotenv.config();
+const path = require("path");
+dotenv.config({ path: path.join(__dirname, "..", ".env") });
 
 const apiKey = process.env.GEMINI_API_KEY;
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 const openRouterKey = process.env.OPENROUTER_API_KEY || process.env.OPEN_ROUTER_KEY;
 const openRouterModel = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
+
+function heuristicAnalysis(metrics) {
+  const beh = metrics?.behavioral || {};
+  const over = beh.overtrading || {};
+  const loss = beh.loss_aversion || {};
+  const rev = beh.revenge_trading || {};
+  const biases = metrics?.bias_type_ratios || {};
+
+  const lines = [];
+  const suggestions = [];
+
+  // Dominant bias from ratios if present
+  const topBias = Object.entries(biases).sort((a, b) => b[1] - a[1])[0];
+  if (topBias) {
+    lines.push(`Dominant bias: ${topBias[0]} (${topBias[1].toFixed(1)}%).`);
+  }
+
+  if (over.avg_trades_per_hour && over.avg_trades_per_hour > 3) {
+    lines.push(`Trade frequency is high at ${over.avg_trades_per_hour.toFixed(1)} trades/hour (peak ${over.max_trades_in_one_hour || "?"}).`);
+    suggestions.push("Cap trades to <=3 per hour and set two trade windows per day.");
+  }
+
+  if (loss.disposition_ratio && loss.disposition_ratio > 1.2) {
+    lines.push(`Disposition ratio ${loss.disposition_ratio.toFixed(2)} shows losses larger than wins.`);
+    suggestions.push("Set hard stop at 1x avg loss and take partials when 1x risk is reached.");
+  }
+
+  if (rev.tilt_indicator_pct && rev.tilt_indicator_pct > 35) {
+    lines.push(`Tilt indicator ${rev.tilt_indicator_pct.toFixed(1)}% signals size escalation after losses.`);
+    suggestions.push("After any loss, cut next position size by 50% and enforce a 20-minute cooldown.");
+  } else if (rev.martingale_stats && Object.keys(rev.martingale_stats).length > 0) {
+    const m6 = rev.martingale_stats["6"];
+    const m0 = rev.martingale_stats["0"];
+    if (m6 && m0 && m6 > m0 * 1.2) {
+      lines.push(`Position size after 6-loss streak is ${(m6 / m0 * 100).toFixed(0)}% of baseline.`);
+      suggestions.push("Stop trading for the session after 3 consecutive losses to avoid martingale escalation.");
+    }
+  }
+
+  if (!lines.length) {
+    lines.push("No severe red flags detected from provided metrics.");
+    suggestions.push("Keep logging trades and monitor trade frequency and loss ratios weekly.");
+  }
+
+  return {
+    summary: lines.join(" "),
+    suggestions,
+  };
+}
 
 function parseJsonFromText(text) {
   try {
@@ -42,6 +92,7 @@ async function callOpenRouter(prompt) {
     },
     body: JSON.stringify({
       model: openRouterModel,
+      max_tokens: 1024,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -168,7 +219,7 @@ async function analyzeBias(metrics) {
     }
 
     // Try OpenRouter if Gemini failed with quota error or isn't configured
-    if (openRouterKey && (isQuotaError(lastErr) || !genAI)) {
+    if (openRouterKey) {
       console.log("Attempting OpenRouter fallback with model:", openRouterModel);
       try {
         const orResult = await callOpenRouter(prompt);
@@ -193,16 +244,15 @@ async function analyzeBias(metrics) {
     }
 
     
-    return {
-      summary: "All LLM providers failed. Please check API keys and quota.",
-      suggestions: ["Verify OPENROUTER_API_KEY is set", "Wait for Gemini quota reset"],
-      error: String(lastErr?.message || lastErr),
-    };
+    const heuristic = heuristicAnalysis(metrics);
+    heuristic.error = String(lastErr?.message || lastErr || "LLM unavailable");
+    return heuristic;
   } catch (err) {
     console.error("Error calling Gemini:", err);
     return {
       summary: "Error calling Gemini.",
-      suggestions: ["Check GEMINI_API_KEY and network connection."],
+      suggestions: ["Check GEMINI_API_KEY / OPENROUTER_API_KEY and network connection."],
+      error: String(err?.message || err),
     };
   }
 }
