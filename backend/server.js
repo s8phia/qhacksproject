@@ -2,6 +2,11 @@ import express from "express";
 import multer from "multer";
 import { v4 as uuidv4 } from "uuid";
 import "dotenv/config";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { createRequire } from "module";
+import cors from "cors";
 
 import { getConnection } from "./snowflake.js";
 import { exec } from "./exec.js";
@@ -9,14 +14,110 @@ import { exec } from "./exec.js";
 import { parseUpload } from "./ingest.js";
 import { fetchTrades, computeBiases, coachingFromBiases, chartData } from "./bias.js";
 import { computeUserMetrics, normalizeMetrics } from "./metrics.js";
-import { getInvestorVector, computeUserVector, alignmentScore } from "./alignment.js";
+import {
+  getInvestorVector,
+  computeUserVector,
+  computeUserVectorFromPortfolioMetrics,
+  alignmentScore,
+} from "./alignment.js";
 
 import { coachLikeInvestor } from "./gemini_coach.js";
 
+const require = createRequire(import.meta.url);
+const { runPythonMetrics } = require("./services/metrics.js");
+const { analyzeBias } = require("./services/gemini");
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const app = express();
+app.use(cors());
+app.use(express.json());
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 },
+});
+
+const RAW_DIR = path.join(__dirname, "uploads", "usertrades_raw");
+if (!fs.existsSync(RAW_DIR)) {
+  fs.mkdirSync(RAW_DIR, { recursive: true });
+}
+
+const sessionPortfolioMetrics = new Map();
+
+function csvCell(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const str = String(value);
+  if (/[",\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+function buildNormalizedTradesCsv(trades) {
+  const header = "timestamp,side,asset,quantity,entry_price,profit_loss";
+  const rows = trades.map((t) => {
+    const qty = t.qty == null || t.qty === "" ? null : Number(t.qty);
+    const notional = t.notional == null || t.notional === "" ? null : Number(t.notional);
+    const entryPrice = Number.isFinite(qty) && qty !== 0 && Number.isFinite(notional)
+      ? Math.abs(notional) / Math.abs(qty)
+      : null;
+
+    return [
+      t.ts,
+      t.side,
+      t.asset,
+      qty,
+      entryPrice,
+      t.pl,
+    ].map(csvCell).join(",");
+  });
+
+  return [header, ...rows].join("\n");
+}
+
+async function computePortfolioMetricsForSession(sessionId, trades) {
+  if (sessionPortfolioMetrics.has(sessionId)) {
+    return sessionPortfolioMetrics.get(sessionId);
+  }
+  if (!trades || !trades.length) return null;
+
+  const normalizedCsv = buildNormalizedTradesCsv(trades);
+  const csvPath = path.join(RAW_DIR, `${sessionId}-normalized.csv`);
+  await fs.promises.writeFile(csvPath, normalizedCsv);
+
+  const pyResult = await runPythonMetrics(csvPath);
+  const portfolioMetrics = pyResult?.portfolio_metrics || null;
+  if (portfolioMetrics) {
+    sessionPortfolioMetrics.set(sessionId, portfolioMetrics);
+  }
+  return portfolioMetrics;
+}
+let lastUserTradesResult = null;
+
+app.get("/", (req, res) => {
+  res.json({ message: "Backend is running" });
+});
+
+app.post("/api/analyze", async (req, res) => {
+  const { transactions, archetype } = req.body || {};
+
+  if (!Array.isArray(transactions) || !archetype) {
+    return res.status(400).json({
+      error: "Invalid payload. Provide transactions[] and archetype.",
+    });
+  }
+
+  try {
+    const result = await analyzeBias(transactions, archetype);
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({
+      error: "Failed to analyze bias.",
+      details: error?.message || "Unknown error",
+    });
+  }
 });
 
 app.get("/health", async (req, res) => {
@@ -28,6 +129,48 @@ app.get("/health", async (req, res) => {
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
+});
+
+app.post("/api/uploads/usertrades", upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded" });
+  }
+
+  const original = req.file.originalname || "upload.csv";
+  if (!original.toLowerCase().endsWith(".csv")) {
+    return res.status(400).json({ error: "Only CSV files allowed" });
+  }
+
+  try {
+    const safeName = `${Date.now()}-${path.basename(original)}`;
+    const rawPath = path.join(RAW_DIR, safeName);
+    await fs.promises.writeFile(rawPath, req.file.buffer);
+
+    const metrics = await runPythonMetrics(rawPath);
+    lastUserTradesResult = {
+      ok: true,
+      filename: safeName,
+      metrics,
+    };
+
+    return res.json(lastUserTradesResult);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({
+      error: "Normalization failed",
+      message: err.message,
+    });
+  }
+});
+
+app.get("/api/uploads/usertrades", (req, res) => {
+  if (!lastUserTradesResult) {
+    return res.status(404).json({
+      error: "No user trades have been uploaded yet",
+    });
+  }
+
+  return res.json(lastUserTradesResult);
 });
 
 app.get("/investors/:investorId/metrics", async (req, res) => {
@@ -105,6 +248,30 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     const sessionId = uuidv4();
 
+    // Compute portfolio metrics via bias_engine.py for this upload
+    let portfolioMetrics = null;
+    try {
+      const rawName = `${sessionId}-${path.basename(req.file.originalname || "upload.csv")}`;
+      const rawPath = path.join(RAW_DIR, rawName);
+      await fs.promises.writeFile(rawPath, req.file.buffer);
+
+      const pyResult = await runPythonMetrics(rawPath);
+      portfolioMetrics = pyResult?.portfolio_metrics || null;
+      if (portfolioMetrics) {
+        sessionPortfolioMetrics.set(sessionId, portfolioMetrics);
+      }
+    } catch (err) {
+      console.warn("Failed to compute portfolio metrics from raw upload:", err?.message || err);
+    }
+
+    if (!portfolioMetrics) {
+      try {
+        portfolioMetrics = await computePortfolioMetricsForSession(sessionId, trades);
+      } catch (err) {
+        console.warn("Failed to compute portfolio metrics from normalized trades:", err?.message || err);
+      }
+    }
+
     // Session date range
     const parsedDates = trades
       .map((t) => new Date(t.ts))
@@ -163,6 +330,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       dateStart,
       dateEnd,
       mode,
+      portfolioMetrics,
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -260,7 +428,16 @@ app.get("/compare/:sessionId/:investorId", async (req, res) => {
     const investorVecRaw = await getInvestorVector(conn, investorId);
     const investorVector = typeof investorVecRaw === "string" ? JSON.parse(investorVecRaw) : investorVecRaw;
 
-    const userVector = computeUserVector(trades, biases);
+    let portfolioMetrics = sessionPortfolioMetrics.get(sessionId) || null;
+    if (!portfolioMetrics) {
+      try {
+        portfolioMetrics = await computePortfolioMetricsForSession(sessionId, trades);
+      } catch (err) {
+        console.warn("Failed to compute portfolio metrics for compare:", err?.message || err);
+      }
+    }
+    const userVector =
+      computeUserVectorFromPortfolioMetrics(portfolioMetrics) || computeUserVector(trades, biases);
     const alignment = alignmentScore(userVector, investorVector);
 
     conn.destroy();
@@ -272,6 +449,7 @@ app.get("/compare/:sessionId/:investorId", async (req, res) => {
       alignment,
       userVector,
       investorVector,
+      portfolioMetrics,
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -298,7 +476,16 @@ app.get("/coach/:sessionId/:investorId", async (req, res) => {
     const userMetrics = computeUserMetrics(trades);
     const normalizedMetrics = normalizeMetrics(userMetrics);
 
-    const userVector = computeUserVector(trades, biases);
+    let portfolioMetrics = sessionPortfolioMetrics.get(sessionId) || null;
+    if (!portfolioMetrics) {
+      try {
+        portfolioMetrics = await computePortfolioMetricsForSession(sessionId, trades);
+      } catch (err) {
+        console.warn("Failed to compute portfolio metrics for coach:", err?.message || err);
+      }
+    }
+    const userVector =
+      computeUserVectorFromPortfolioMetrics(portfolioMetrics) || computeUserVector(trades, biases);
 
     // --- investor side ---
     const invRows = await exec(conn, `SELECT * FROM CORE.INVESTORS WHERE INVESTOR_ID = ? LIMIT 1`, [investorId]);
@@ -363,6 +550,7 @@ app.get("/coach/:sessionId/:investorId", async (req, res) => {
         userMetrics,
         normalizedMetrics,
         biases, // includes evidence & scores already
+        portfolioMetrics,
       },
       target: {
         investorVector,

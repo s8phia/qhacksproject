@@ -43,6 +43,24 @@ export function computeUserVector(trades, biases) {
   return { trade_frequency, holding_patience, risk_reactivity, consistency };
 }
 
+export function computeUserVectorFromPortfolioMetrics(portfolioMetrics) {
+  if (!portfolioMetrics) return null;
+
+  const clamp01 = (x) => Math.max(0, Math.min(1, x));
+  const to01 = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    return clamp01(n / 100);
+  };
+
+  return {
+    trade_frequency: to01(portfolioMetrics.trade_frequency_score),
+    holding_patience: to01(portfolioMetrics.holding_patience_score),
+    risk_reactivity: to01(portfolioMetrics.risk_reactivity_score),
+    consistency: to01(portfolioMetrics.consistency_score),
+  };
+}
+
 export function alignmentScore(userVec, investorVec) {
   // investorVec may come in as stringified JSON depending on driver; normalize
   const iv = typeof investorVec === "string" ? JSON.parse(investorVec) : investorVec;
