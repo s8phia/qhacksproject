@@ -4,6 +4,8 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const apiKey = process.env.GEMINI_API_KEY;
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
+const openRouterKey = process.env.OPEN_ROUTER_KEY;
+const openRouterModel = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -28,14 +30,56 @@ function isOverloadError(err) {
   return msg.includes("503") || msg.toLowerCase().includes("overloaded");
 }
 
+function isQuotaError(err) {
+  const msg = String(err?.message || err);
+  return msg.includes("429") || msg.toLowerCase().includes("quota");
+}
+
+async function callOpenRouter(prompt) {
+  if (!openRouterKey) return null;
+
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${openRouterKey}`,
+      "HTTP-Referer": "http://localhost",
+      "X-Title": "qhacksproject-coaching",
+    },
+    body: JSON.stringify({
+      model: openRouterModel,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: "You are a behavioral finance + trading performance coach. Return only JSON.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`OpenRouter error ${res.status}: ${text}`);
+  }
+
+  const data = await res.json();
+  const content = data?.choices?.[0]?.message?.content || "";
+  return parseJsonFromText(content);
+}
+
 export async function coachLikeInvestor(payload) {
   // Mock mode for demo reliability
-  if (!apiKey || !genAI) {
+  if (!apiKey && !openRouterKey) {
     const target = payload?.investor?.displayName || payload?.investor?.investorId || "chosen investor";
     return {
       investor: target,
       alignmentScore: payload?.alignment?.score ?? null,
-      summary: "Mock coaching output (GEMINI_API_KEY not set).",
+      summary: "Mock coaching output (no LLM API key set).",
       keyGaps: (payload?.alignment?.gaps || []).slice(0, 6),
       actionPlan: [
         {
@@ -63,6 +107,7 @@ export async function coachLikeInvestor(payload) {
     "Return ONLY valid JSON with EXACT keys:",
     '{ "investor": string, "alignmentScore": number, "summary": string, "keyGaps": array, "actionPlan": array, "guardrails": array, "next7Days": array }',
     "",
+    "Each keyGaps item must include: dimension (string), description (string).",
     "Each actionPlan item must include: objective, steps, metric, targetThreshold.",
     "",
     "Data payload:",
@@ -80,38 +125,72 @@ export async function coachLikeInvestor(payload) {
 
   let lastErr = null;
 
-  for (const modelName of modelFallbacks) {
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const model = genAI.getGenerativeModel({ model: modelName });
-        const response = await model.generateContent(prompt);
-        const text = response?.response?.text?.() ?? "";
+  if (genAI) {
+    for (const modelName of modelFallbacks) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const model = genAI.getGenerativeModel({
+            model: modelName,
+            generationConfig: {
+              responseMimeType: "application/json",
+            },
+          });
+          const response = await model.generateContent(prompt);
+          const text = response?.response?.text?.() ?? "";
 
-        const parsed = parseJsonFromText(text);
-        if (parsed && parsed.investor && typeof parsed.summary === "string") return parsed;
+          const parsed = parseJsonFromText(text);
+          if (parsed && parsed.investor && typeof parsed.summary === "string") return parsed;
 
-        // If model responded but not JSON, treat as failure and try next attempt/model
-        lastErr = new Error(`Unparseable JSON from model ${modelName}`);
-      } catch (err) {
-        lastErr = err;
+          // If model responded but not JSON, treat as failure and try next attempt/model
+          lastErr = new Error(`Unparseable JSON from model ${modelName}`);
+        } catch (err) {
+          lastErr = err;
 
-        // If overload, retry with backoff; otherwise break and move to next model
-        if (isOverloadError(err)) {
-          await sleep(350 * attempt);
-          continue;
+          // If overload or quota, try OpenRouter fallback
+          if (isOverloadError(err) || isQuotaError(err)) {
+            console.log("Gemini quota/overload for coaching, trying OpenRouter fallback...");
+            break;
+          }
+          
+          // If overload, retry with backoff; otherwise break and move to next model
+          if (isOverloadError(err)) {
+            await sleep(350 * attempt);
+            continue;
+          }
+          break;
         }
+      }
+      
+      // If quota error, break out of model loop and try OpenRouter
+      if (isQuotaError(lastErr)) {
         break;
       }
+    }
+  }
+
+  // Try OpenRouter if Gemini failed with quota/overload or isn't configured
+  if (openRouterKey && (isQuotaError(lastErr) || isOverloadError(lastErr) || !genAI)) {
+    console.log("Attempting OpenRouter fallback for coaching with model:", openRouterModel);
+    try {
+      const orResult = await callOpenRouter(prompt);
+      if (orResult && orResult.investor && typeof orResult.summary === "string") {
+        console.log("OpenRouter coaching success");
+        return orResult;
+      }
+      console.log("OpenRouter returned invalid format for coaching");
+    } catch (err) {
+      console.error("OpenRouter coaching error:", err.message);
+      lastErr = err;
     }
   }
 
   return {
     investor: payload?.investor?.displayName || payload?.investor?.investorId || "unknown",
     alignmentScore: payload?.alignment?.score ?? null,
-    summary: "Gemini failed after retries/fallbacks.",
+    summary: "All LLM providers failed for coaching. Please check API keys and quota.",
     keyGaps: payload?.alignment?.gaps || [],
     actionPlan: [],
-    guardrails: ["Try again; model overload or error."],
+    guardrails: ["Verify OPENROUTER_API_KEY is set", "Wait for Gemini quota reset"],
     next7Days: [],
     error: String(lastErr?.message || lastErr),
   };
