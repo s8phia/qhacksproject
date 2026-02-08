@@ -147,9 +147,77 @@ app.post("/api/uploads/usertrades", upload.single("file"), async (req, res) => {
     await fs.promises.writeFile(rawPath, req.file.buffer);
 
     const metrics = await runPythonMetrics(rawPath);
+    
+    // Create session ID for this upload
+    const sessionId = uuidv4();
+    const userId = "demo-user";
+    
+    // Parse trades to create session
+    try {
+      const { trades } = parseUpload(req.file.buffer);
+      
+      const parsedDates = trades
+        .map((t) => new Date(t.ts))
+        .filter((d) => !Number.isNaN(d.valueOf()))
+        .sort((a, b) => a - b);
+
+      const dateStart = parsedDates.length ? parsedDates[0].toISOString().slice(0, 10) : null;
+      const dateEnd = parsedDates.length ? parsedDates[parsedDates.length - 1].toISOString().slice(0, 10) : null;
+
+      const conn = await getConnection();
+
+      // Ensure user exists
+      await exec(
+        conn,
+        `MERGE INTO CORE.USERS t
+         USING (SELECT ? AS USER_ID) s
+         ON t.USER_ID = s.USER_ID
+         WHEN NOT MATCHED THEN INSERT (USER_ID) VALUES (s.USER_ID)`,
+        [userId]
+      );
+
+      // Insert session
+      await exec(
+        conn,
+        `INSERT INTO CORE.SESSIONS (SESSION_ID, USER_ID, SOURCE, NUM_TRADES, DATE_START, DATE_END)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [sessionId, userId, "simple_upload", trades.length, dateStart, dateEnd]
+      );
+
+      // Batch insert trades
+      const values = trades.map(() => "(?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
+      const binds = trades.flatMap((t) => [
+        sessionId,
+        String(t.tradeId),
+        t.ts,
+        t.side,
+        t.asset,
+        t.qty == null || t.qty === "" ? null : t.qty,
+        t.notional == null || t.notional === "" ? null : t.notional,
+        t.pl == null || t.pl === "" ? null : t.pl,
+      ]);
+
+      await exec(
+        conn,
+        `INSERT INTO CORE.TRADES (SESSION_ID, TRADE_ID, TS, SIDE, ASSET, QTY, NOTIONAL, PL)
+         SELECT * FROM VALUES ${values}`,
+        binds
+      );
+
+      conn.destroy();
+      
+      // Store portfolio metrics for this session
+      if (metrics?.portfolio_metrics) {
+        sessionPortfolioMetrics.set(sessionId, metrics.portfolio_metrics);
+      }
+    } catch (err) {
+      console.warn("Failed to create session for simple upload:", err?.message || err);
+    }
+
     lastUserTradesResult = {
       ok: true,
       filename: safeName,
+      sessionId,
       metrics,
     };
 

@@ -16,9 +16,9 @@ type ProfileData = {
 };
 
 const PERSONAS = [
-  { label: "Warren Buffett", slug: "warren-buffett" },
-  { label: "Cathie Wood", slug: "cathie-wood" },
-  { label: "Michael Burry", slug: "michael-burry" }
+  { label: "Warren Buffett", slug: "warren-buffett", investorId: "buffett_berkshire" },
+  { label: "Cathie Wood", slug: "cathie-wood", investorId: "cathie_ark" },
+  { label: "Michael Burry", slug: "michael-burry", investorId: "burry_scion" }
 ];
 
 function getPersonaImage(slug: string) {
@@ -76,6 +76,9 @@ export default function ProfilePage() {
     const [biasRatios, setBiasRatios] = useState<Record<string, number> | null>(null);
     const [geminiAnalysis, setGeminiAnalysis] = useState<{ summary?: string; suggestions?: string[] } | null>(null);
     const [geminiError, setGeminiError] = useState<string | null>(null);
+    const [coachingData, setCoachingData] = useState<any>(null);
+    const [coachingLoading, setCoachingLoading] = useState(false);
+    const [coachingError, setCoachingError] = useState<string | null>(null);
 
     // 🔽 only for dumping / debugging
     const [rawApiData, setRawApiData] = useState<any>(null);
@@ -150,6 +153,29 @@ export default function ProfilePage() {
                   console.error("Gemini analysis error:", err);
                   setGeminiError(err?.message || "Failed to load analysis");
                 });
+            }
+
+            // Fetch coaching comparison
+            const sessionId = data.sessionId || localStorage.getItem('sessionId');
+            const persona = PERSONAS.find(p => p.slug === slug);
+            if (sessionId && persona?.investorId) {
+              setCoachingLoading(true);
+              setCoachingError(null);
+              
+              fetch(`http://localhost:3001/coach/${sessionId}/${persona.investorId}`)
+                .then(async (coachRes) => {
+                  const coachData = await coachRes.json().catch(() => ({}));
+                  if (coachRes.ok) {
+                    setCoachingData(coachData);
+                  } else {
+                    setCoachingError(coachData?.error || "Failed to generate coaching");
+                  }
+                })
+                .catch((err) => {
+                  console.error("Coaching error:", err);
+                  setCoachingError(err?.message || "Failed to load coaching");
+                })
+                .finally(() => setCoachingLoading(false));
             }
           } catch (err: any) {
             console.error(err);
@@ -399,6 +425,94 @@ export default function ProfilePage() {
             )}
           </div>
         </div>
+      </section>
+
+      {/* Coaching Comparison Section */}
+      <section className="mt-10 border rounded-xl p-6">
+        <h2 className="text-2xl font-semibold mb-4">
+          AI Coaching: How to Trade Like {profile?.name}
+        </h2>
+
+        {coachingLoading ? (
+          <p className="text-sm text-gray-500 animate-pulse">Loading personalized coaching...</p>
+        ) : coachingError ? (
+          <div className="rounded-lg bg-red-50 p-4">
+            <p className="text-sm text-red-600">{coachingError}</p>
+          </div>
+        ) : coachingData?.coaching ? (
+          <div className="space-y-6">
+            {/* Summary */}
+            {coachingData.coaching.summary && (
+              <div className="rounded-lg bg-blue-50 p-4">
+                <h3 className="text-base font-semibold mb-2 text-blue-900">Analysis</h3>
+                <p className="text-sm text-blue-800">{coachingData.coaching.summary}</p>
+              </div>
+            )}
+
+            {/* Alignment Score */}
+            {coachingData.comparison?.alignment?.score != null && (
+              <div className="rounded-lg border p-4">
+                <h3 className="text-base font-semibold mb-2">Alignment Score</h3>
+                <div className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-pink-500">
+                  {Math.round(coachingData.comparison.alignment.score)}%
+                </div>
+                <p className="text-xs text-gray-500 mt-1">How closely your trading matches {profile?.name}</p>
+              </div>
+            )}
+
+            {/* Key Gaps */}
+            {coachingData.coaching.keyGaps?.length > 0 && (
+              <div className="rounded-lg border p-4">
+                <h3 className="text-base font-semibold mb-3">Key Differences</h3>
+                <ul className="space-y-2">
+                  {coachingData.coaching.keyGaps.map((gap: any, idx: number) => (
+                    <li key={idx} className="text-sm text-gray-700">
+                      <span className="font-medium">{gap.dimension}:</span> {gap.description}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Action Plan */}
+            {coachingData.coaching.actionPlan?.length > 0 && (
+              <div className="rounded-lg border p-4">
+                <h3 className="text-base font-semibold mb-3">Action Plan</h3>
+                <div className="space-y-4">
+                  {coachingData.coaching.actionPlan.map((action: any, idx: number) => (
+                    <div key={idx} className="border-l-4 border-blue-500 pl-4">
+                      <h4 className="font-medium text-sm mb-1">{action.objective}</h4>
+                      <ul className="list-disc list-inside space-y-1 text-sm text-gray-600">
+                        {action.steps?.map((step: string, sIdx: number) => (
+                          <li key={sIdx}>{step}</li>
+                        ))}
+                      </ul>
+                      {action.targetThreshold && (
+                        <p className="text-xs text-gray-500 mt-1">
+                          Target: {action.metric} {action.targetThreshold}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Guardrails */}
+            {coachingData.coaching.guardrails?.length > 0 && (
+              <div className="rounded-lg bg-amber-50 border border-amber-200 p-4">
+                <h3 className="text-base font-semibold mb-2 text-amber-900">Guardrails</h3>
+                <ul className="list-disc list-inside space-y-1 text-sm text-amber-800">
+                  {coachingData.coaching.guardrails.map((rule: string, idx: number) => (
+                    <li key={idx}>{rule}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500">Upload trading data to get personalized coaching.</p>
+        )}
       </section>
 
       <section className="mt-10 border rounded-xl p-6">

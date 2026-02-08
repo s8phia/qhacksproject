@@ -41,7 +41,10 @@ export default function Home() {
 
       try {
         data = await res.json();
-        // setResult(JSON.stringify(data.metrics ?? {}, null, 2));
+        // Store sessionId if returned
+        if (data.sessionId) {
+          localStorage.setItem('sessionId', data.sessionId);
+        }
       } catch {
         setResult("Upload complete, but failed to parse metrics.");
         return;
