@@ -41,7 +41,7 @@ export default function Home() {
 
       try {
         data = await res.json();
-        setResult(JSON.stringify(data.metrics ?? {}, null, 2));
+        // setResult(JSON.stringify(data.metrics ?? {}, null, 2));
       } catch {
         setResult("Upload complete, but failed to parse metrics.");
         return;
@@ -103,7 +103,7 @@ export default function Home() {
 
           {/* File status */}
           {file ? (
-            <div className="flex items-center gap-2 text-[#0c0810]">
+            <div className="flex items-center gap-2 text-gray-900 dark:text-gray-100">
               <span>{file.name}</span>
               <button
                 onClick={removeFile}
@@ -114,13 +114,16 @@ export default function Home() {
               </button>
             </div>
           ) : (
-            <span className="text-[#0c0810]">No file selected</span>
+            <span className="text-gray-900 dark:text-gray-100">
+              No file selected
+            </span>
+
           )}
 
           {/* 🔽 same debug output as your simple page */}
           {result && (
-            <pre className="mt-4 text-xs bg-gray-100 p-3 rounded max-w-xl overflow-auto text-black">
-              {JSON.stringify(result, null, 2)}
+            <pre className="mt-4 text-xs max-w-xl overflow-auto p-0 bg-transparent font-fustat text-black dark:text-white">
+              {result}
             </pre>
           )}
 
