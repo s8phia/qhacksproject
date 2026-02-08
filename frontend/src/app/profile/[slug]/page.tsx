@@ -4,6 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import PortfolioRadar from "@/app/components/RadarChart";
 import BiasPieChart from "@/app/components/BiasPieChart";
+import CountUp from "@/app/components/CountUp";
 
 type ProfileData = {
   name: string;
@@ -145,27 +146,32 @@ export default function ProfilePage() {
     return <main className="min-h-screen p-10">Profile not found.</main>;
   }
 
+  const behavioral = rawApiData?.metrics?.behavioral;
+  const overtrading = behavioral?.overtrading;
+  const lossAversion = behavioral?.loss_aversion;
+  const revengeTrading = behavioral?.revenge_trading;
+  const formatNumber = (value: number | null | undefined, digits = 2) =>
+    value == null || Number.isNaN(value) ? "--" : value.toFixed(digits);
+  const biasLabels: Record<string, string> = {
+    overtrader: "overtrader",
+    loss_aversion: "loss-averse trader",
+    revenge_trader: "revenge trader",
+    calm_trader: "calm trader"
+  };
+  const biasEntries = biasRatios ? Object.entries(biasRatios) : [];
+  const topBias = biasEntries.length
+    ? biasEntries.reduce(
+        (acc, [key, value]) =>
+          value > acc.value ? { key, value } : acc,
+        { key: biasEntries[0][0], value: biasEntries[0][1] }
+      )
+    : null;
+  const topBiasLabel = topBias ? biasLabels[topBias.key] ?? topBias.key : null;
+  const topBiasValue = topBias ? Number(topBias.value.toFixed(1)) : null;
+
   return (
     <main className="min-h-screen p-10 max-w-7xl mx-auto">
-      {/* Header */}
-      <section className="flex items-center justify-between mb-12">
-        <div className="flex items-center gap-6">
-          <img
-            src={getPersonaImage(slug)}
-            alt={profile.name}
-            className="w-32 h-32 rounded-full object-cover border"
-          />
-
-          <div>
-            <h1 className="text-4xl font-bold capitalize">
-              {profile.name}
-            </h1>
-            <p className="text-gray-600">
-              {profile.tradingStyle ?? "Trading style coming soon"}
-            </p>
-          </div>
-        </div>
-
+      <section className="flex justify-between items-center mb-10">
         <div className="flex flex-col items-end">
           <span className="text-xs text-gray-500 mb-1">
             Change persona
@@ -184,6 +190,94 @@ export default function ProfilePage() {
               </option>
             ))}
           </select>
+        </div>
+      </section>
+
+      <section className="border rounded-xl p-6 mb-10">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div>
+            <h3 className="text-lg font-semibold mb-2">
+              Bias type ratios
+            </h3>
+
+            {biasRatios ? (
+              <BiasPieChart ratios={biasRatios} showSummary={false} />
+            ) : (
+              <p className="text-sm text-gray-500">
+                No bias ratio data yet. Upload a CSV first.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <h3 className="text-lg font-semibold mb-2">
+              Bias highlight
+            </h3>
+
+            {topBiasLabel && topBiasValue != null ? (
+              <div className="text-2xl md:text-3xl font-semibold">
+                You are{" "}
+                <CountUp
+                  from={0}
+                  to={topBiasValue}
+                  duration={1.4}
+                  className="inline-block text-transparent bg-clip-text bg-gradient-to-r from-amber-500 via-pink-500 to-indigo-600"
+                />
+                % a {topBiasLabel}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-600">
+                Upload data to see your bias highlight.
+              </p>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-10 mb-10">
+        <h3 className="text-lg font-semibold mb-4">
+          Bias breakdown
+        </h3>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="rounded-2xl border p-5">
+            <h4 className="text-base font-semibold mb-2">
+              Over trading
+            </h4>
+            <p className="text-sm text-gray-600">
+              Avg trades/hour: {formatNumber(overtrading?.avg_trades_per_hour)}
+            </p>
+            <p className="text-sm text-gray-600">
+              Max trades/hour: {overtrading?.max_trades_in_one_hour ?? "--"}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border p-5">
+            <h4 className="text-base font-semibold mb-2">
+              Loss aversion
+            </h4>
+            <p className="text-sm text-gray-600">
+              Avg loss: {formatNumber(lossAversion?.avg_abs_loss)}
+            </p>
+            <p className="text-sm text-gray-600">
+              Avg win: {formatNumber(lossAversion?.avg_win)}
+            </p>
+            <p className="text-sm text-gray-600">
+              Disposition ratio: {formatNumber(lossAversion?.disposition_ratio, 3)}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border p-5">
+            <h4 className="text-base font-semibold mb-2">
+              Revenge trading
+            </h4>
+            <p className="text-sm text-gray-600">
+              Tilt indicator: {formatNumber(revengeTrading?.tilt_indicator_pct)}%
+            </p>
+            <p className="text-sm text-gray-600">
+              Martingale buckets: {revengeTrading?.martingale_stats ? Object.keys(revengeTrading.martingale_stats).length : "--"}
+            </p>
+          </div>
         </div>
       </section>
 
@@ -230,40 +324,22 @@ export default function ProfilePage() {
             Your profile
           </h2>
 
-          <div>
+          <div className="border rounded-lg p-4">
             <h3 className="text-lg font-semibold mb-2">
               Risk & style radar
             </h3>
 
-            <div className="border rounded-lg p-4">
-              {analysisResult ? (
-                <PortfolioRadar
-                  result={analysisResult}
-                  label="Your trading profile"
-                  color="54,162,235"
-                />
-              ) : (
-                <p className="text-sm text-gray-500">
-                  No uploaded data yet. Upload a CSV first.
-                </p>
-              )}
-            </div>
-          </div>
-
-          <div className="mt-8">
-            <h3 className="text-lg font-semibold mb-2">
-              Bias type ratios
-            </h3>
-
-            <div className="border rounded-lg p-4">
-              {biasRatios ? (
-                <BiasPieChart ratios={biasRatios} />
-              ) : (
-                <p className="text-sm text-gray-500">
-                  No bias ratio data yet. Upload a CSV first.
-                </p>
-              )}
-            </div>
+            {analysisResult ? (
+              <PortfolioRadar
+                result={analysisResult}
+                label="Your trading profile"
+                color="54,162,235"
+              />
+            ) : (
+              <p className="text-sm text-gray-500">
+                No uploaded data yet. Upload a CSV first.
+              </p>
+            )}
           </div>
         </div>
       </section>

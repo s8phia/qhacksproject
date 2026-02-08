@@ -18,9 +18,10 @@ const COLORS: Record<string, string> = {
 
 type Props = {
   ratios: Record<string, number>;
+  showSummary?: boolean;
 };
 
-export default function BiasPieChart({ ratios }: Props) {
+export default function BiasPieChart({ ratios, showSummary = true }: Props) {
   const data = Object.keys(LABELS).map((key, index) => ({
     id: index,
     label: LABELS[key],
@@ -47,12 +48,14 @@ export default function BiasPieChart({ ratios }: Props) {
         ]}
       />
 
-      <div className="mt-3 text-sm text-gray-600">
-        <span className="font-semibold text-gray-800">
-          Highest bias:
-        </span>{" "}
-        {top.label} ({top.value.toFixed(1)}%)
-      </div>
+      {showSummary && (
+        <div className="mt-3 text-sm text-gray-600">
+          <span className="font-semibold text-gray-800">
+            Highest bias:
+          </span>{" "}
+          {top.label} ({top.value.toFixed(1)}%)
+        </div>
+      )}
 
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-600">
         {data.map((item) => (
