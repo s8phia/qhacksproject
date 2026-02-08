@@ -3,6 +3,7 @@
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import PortfolioRadar from "@/app/components/RadarChart";
+import BiasPieChart from "@/app/components/BiasPieChart";
 
 type ProfileData = {
   name: string;
@@ -71,6 +72,7 @@ export default function ProfilePage() {
 
   // 🔽 this comes from your backend now
   const [analysisResult, setAnalysisResult] = useState<any>(null);
+  const [biasRatios, setBiasRatios] = useState<Record<string, number> | null>(null);
 
   // 🔽 only for dumping / debugging
   const [rawApiData, setRawApiData] = useState<any>(null);
@@ -98,14 +100,16 @@ export default function ProfilePage() {
         setRawApiData(data);
 
         const pm = data.metrics?.portfolio_metrics;
+        const biasTypeRatios = data.metrics?.bias_type_ratios ?? null;
 
         if (!pm) {
-            setAnalysisResult(null);
-            return;
+          setAnalysisResult(null);
+          setBiasRatios(biasTypeRatios);
+          return;
         }
 
         const radarData = {
-            normalizedMetrics: {
+          normalizedMetrics: {
             trade_frequency: pm.trade_frequency_score / 100,
             holding_period: pm.holding_patience_score / 100,
             after_loss: pm.risk_reactivity_score / 100,
@@ -114,16 +118,18 @@ export default function ProfilePage() {
             // so we map something reasonable for now
             avg_trade_size: pm.consistency_score / 100,
             size_variability: pm.consistency_score / 100
-            }
+          }
         };
 
         setAnalysisResult(radarData);
-})
+        setBiasRatios(biasTypeRatios);
+      })
 
       .catch((err) => {
         console.error(err);
         setRawApiData({ error: err.message });
         setAnalysisResult(null);
+        setBiasRatios(null);
       })
       .finally(() => {
         setLoading(false);
@@ -243,10 +249,25 @@ export default function ProfilePage() {
               )}
             </div>
           </div>
+
+          <div className="mt-8">
+            <h3 className="text-lg font-semibold mb-2">
+              Bias type ratios
+            </h3>
+
+            <div className="border rounded-lg p-4">
+              {biasRatios ? (
+                <BiasPieChart ratios={biasRatios} />
+              ) : (
+                <p className="text-sm text-gray-500">
+                  No bias ratio data yet. Upload a CSV first.
+                </p>
+              )}
+            </div>
+          </div>
         </div>
       </section>
 
-      {/* DEBUG DUMP */}
       <section className="mt-10 border rounded-xl p-6">
         <h2 className="text-lg font-semibold mb-3">
           Raw backend response
