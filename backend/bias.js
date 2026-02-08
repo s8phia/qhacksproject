@@ -253,12 +253,20 @@ export function chartData(trades) {
     side: t.side,
   }));
 
+  // Limit timeline length to keep frontend charts stable
+  const MAX_POINTS = 2000;
+  let timelineCapped = timeline;
+  if (timeline.length > MAX_POINTS) {
+    const step = Math.ceil(timeline.length / MAX_POINTS);
+    timelineCapped = timeline.filter((_, idx) => idx % step === 0);
+  }
+
   return {
     tradesPerDay,
     hasPL,
     cumulativeLabel: hasPL ? "Cumulative P/L" : "Cumulative Trade Value",
     timelineLabel: hasPL ? "Trade P/L" : "Trade Value",
     cumulativeSeries,
-    timeline,
+    timeline: timelineCapped,
   };
 }

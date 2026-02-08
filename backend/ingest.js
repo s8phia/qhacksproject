@@ -79,7 +79,7 @@ function parseCsvTrades(csvText) {
   const kTs = pick("timestamp", "time", "date", "order_date", "orderdate", "settlement_date");
   const kSide = pick("buy/sell", "side", "action", "type");
   const kAsset = pick("asset", "symbol", "ticker");
-  const kPL = pick("p/l", "pl", "pnl", "profit", "realizedpnl");
+  const kPL = pick("p/l", "pl", "pnl", "profit", "profit_loss", "profitloss", "realizedpnl");
   const kQty = pick("qty", "quantity");
   const kNotional = pick("notional", "cash", "cash_cad", "amount");
 
