@@ -118,6 +118,117 @@ function buildNormalizedTradesCsv(trades) {
   return [header, ...rows].join("\n");
 }
 
+async function writeNormalizedCsvFile(trades, destPath) {
+  const stream = fs.createWriteStream(destPath);
+  stream.write("timestamp,side,asset,quantity,entry_price,profit_loss\n");
+
+  for (const t of trades) {
+    const tsValue = t.ts instanceof Date ? t.ts.toISOString() : t.ts;
+    const qty = t.qty == null || t.qty === "" ? null : Number(t.qty);
+    const notional = t.notional == null || t.notional === "" ? null : Number(t.notional);
+    const entryPrice = Number.isFinite(qty) && qty !== 0 && Number.isFinite(notional)
+      ? Math.abs(notional) / Math.abs(qty)
+      : null;
+
+    const row = [
+      tsValue,
+      t.side,
+      t.asset,
+      qty,
+      entryPrice,
+      t.pl,
+    ]
+      .map(csvCell)
+      .join(",") + "\n";
+
+    if (!stream.write(row)) {
+      await new Promise((resolve) => stream.once("drain", resolve));
+    }
+  }
+
+  await new Promise((resolve, reject) => {
+    stream.on("finish", resolve);
+    stream.on("error", reject);
+    stream.end();
+  });
+}
+
+function dateRangeFromTrades(trades) {
+  let minTs = null;
+  let maxTs = null;
+  for (const t of trades) {
+    const ts = t.ts instanceof Date ? t.ts : new Date(t.ts);
+    if (Number.isNaN(ts.valueOf())) continue;
+    if (!minTs || ts < minTs) minTs = ts;
+    if (!maxTs || ts > maxTs) maxTs = ts;
+  }
+  return { minTs, maxTs };
+}
+
+async function persistSessionToSnowflake({
+  sessionId,
+  userId,
+  trades,
+  metrics = null,
+  dateRange = null,
+  maxInsert = 5000,
+  source = "simple_upload",
+}) {
+  if (!trades || trades.length === 0) return;
+
+  const dr = dateRange ?? dateRangeFromTrades(trades);
+  const dateStart = dr.minTs ? dr.minTs.toISOString().slice(0, 10) : null;
+  const dateEnd = dr.maxTs ? dr.maxTs.toISOString().slice(0, 10) : null;
+
+  const conn = await getConnection();
+
+  // Ensure user exists
+  await exec(
+    conn,
+    `MERGE INTO CORE.USERS t
+     USING (SELECT ? AS USER_ID) s
+     ON t.USER_ID = s.USER_ID
+     WHEN NOT MATCHED THEN INSERT (USER_ID) VALUES (s.USER_ID)`,
+    [userId]
+  );
+
+  await exec(
+    conn,
+    `INSERT INTO CORE.SESSIONS (SESSION_ID, USER_ID, SOURCE, NUM_TRADES, DATE_START, DATE_END)
+    VALUES (?, ?, ?, ?, ?, ?)`,
+    [sessionId, userId, source, trades.length, dateStart, dateEnd]
+  );
+
+  // Limit insert size to avoid giant VALUES payload blocking the event loop
+  const batch = trades.slice(0, Math.min(maxInsert, trades.length));
+  if (batch.length) {
+    const values = batch.map(() => "(?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
+    const binds = batch.flatMap((t) => [
+      sessionId,
+      String(t.tradeId),
+      t.ts,
+      t.side,
+      t.asset,
+      t.qty == null || t.qty === "" ? null : t.qty,
+      t.notional == null || t.notional === "" ? null : t.notional,
+      t.pl == null || t.pl === "" ? null : t.pl,
+    ]);
+
+    await exec(
+      conn,
+      `INSERT INTO CORE.TRADES (SESSION_ID, TRADE_ID, TS, SIDE, ASSET, QTY, NOTIONAL, PL)
+       SELECT * FROM VALUES ${values}`,
+      binds
+    );
+  }
+
+  conn.destroy();
+
+  if (metrics?.portfolio_metrics) {
+    sessionPortfolioMetrics.set(sessionId, metrics.portfolio_metrics);
+  }
+}
+
 async function computePortfolioMetricsForSession(sessionId, trades) {
   if (sessionPortfolioMetrics.has(sessionId)) {
     return sessionPortfolioMetrics.get(sessionId);
@@ -191,85 +302,41 @@ app.post("/api/uploads/usertrades", upload.single("file"), async (req, res) => {
     const userId = "demo-user";
 
     let metrics = null;
+    const normalizedPath = path.join(RAW_DIR, `${sessionId}-normalized.csv`);
 
     // Parse trades, normalize, and run metrics (critical path)
     let normalized = [];
+    let dateRange = null;
     try {
-      const { trades } = parseUpload(req.file.buffer);
-      normalized = normalizeTrades(trades);
+      const parsed = await parseUpload(req.file.buffer, { normalizedPath });
+      normalized = parsed.normalized ? parsed.trades : normalizeTrades(parsed.trades);
+      dateRange = parsed.dateRange;
+
+      if (!parsed.normalized) {
+        await writeNormalizedCsvFile(normalized, normalizedPath);
+      }
+
       if (normalized.length) {
         sessionTrades.set(sessionId, normalized);
       }
 
-      // Normalize CSV for Python metrics
-      const normalizedCsv = buildNormalizedTradesCsv(normalized);
-      const normalizedPath = path.join(RAW_DIR, `${sessionId}-normalized.csv`);
-      await fs.promises.writeFile(normalizedPath, normalizedCsv);
       metrics = await runPythonMetrics(normalizedPath);
+      if (metrics?.portfolio_metrics) {
+        sessionPortfolioMetrics.set(sessionId, metrics.portfolio_metrics);
+      }
     } catch (err) {
       console.error("Upload parsing/metrics failed:", err);
       return res.status(400).json({ error: "Normalization failed", message: err?.message || String(err) });
     }
 
-    // Try to persist to Snowflake (non-blocking for response)
-    try {
-      const parsedDates = normalized
-        .map((t) => new Date(t.ts))
-        .filter((d) => !Number.isNaN(d.valueOf()))
-        .sort((a, b) => a - b);
-
-      const dateStart = parsedDates.length ? parsedDates[0].toISOString().slice(0, 10) : null;
-      const dateEnd = parsedDates.length ? parsedDates[parsedDates.length - 1].toISOString().slice(0, 10) : null;
-
-      const conn = await getConnection();
-
-      // Ensure user exists
-      await exec(
-        conn,
-        `MERGE INTO CORE.USERS t
-         USING (SELECT ? AS USER_ID) s
-         ON t.USER_ID = s.USER_ID
-         WHEN NOT MATCHED THEN INSERT (USER_ID) VALUES (s.USER_ID)`,
-        [userId]
-      );
-
-      // Insert session
-      await exec(
-        conn,
-        `INSERT INTO CORE.SESSIONS (SESSION_ID, USER_ID, SOURCE, NUM_TRADES, DATE_START, DATE_END)
-        VALUES (?, ?, ?, ?, ?, ?)`,
-        [sessionId, userId, "simple_upload", normalized.length, dateStart, dateEnd]
-      );
-
-      // Batch insert trades
-      const values = trades.map(() => "(?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
-      const binds = trades.flatMap((t) => [
-        sessionId,
-        String(t.tradeId),
-        t.ts,
-        t.side,
-        t.asset,
-        t.qty == null || t.qty === "" ? null : t.qty,
-        t.notional == null || t.notional === "" ? null : t.notional,
-        t.pl == null || t.pl === "" ? null : t.pl,
-      ]);
-
-      await exec(
-        conn,
-        `INSERT INTO CORE.TRADES (SESSION_ID, TRADE_ID, TS, SIDE, ASSET, QTY, NOTIONAL, PL)
-         SELECT * FROM VALUES ${values}`,
-        binds
-      );
-
-      conn.destroy();
-      
-      // Store portfolio metrics for this session
-      if (metrics?.portfolio_metrics) {
-        sessionPortfolioMetrics.set(sessionId, metrics.portfolio_metrics);
-      }
-    } catch (err) {
-      console.warn("Failed to create session for simple upload:", err?.message || err);
-    }
+    // Kick off Snowflake persistence without blocking user response
+    persistSessionToSnowflake({
+      sessionId,
+      userId,
+      trades: normalized,
+      metrics,
+      dateRange,
+    }).catch((err) => console.warn("Failed to create session for simple upload:", err?.message || err));
 
     lastUserTradesResult = {
       ok: true,
@@ -310,12 +377,16 @@ app.post("/upload", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ ok: false, error: "Missing file field 'file'" });
 
-    const { trades, mode } = parseUpload(req.file.buffer);
     const sessionId = uuidv4();
-    const normalized = normalizeTrades(trades);
-    if (normalized.length) {
-      sessionTrades.set(sessionId, normalized);
+    const normalizedPath = path.join(RAW_DIR, `${sessionId}-normalized.csv`);
+
+    const parsed = await parseUpload(req.file.buffer, { normalizedPath });
+    const mode = parsed.mode;
+    const normalized = parsed.normalized ? parsed.trades : normalizeTrades(parsed.trades);
+    if (!parsed.normalized) {
+      await writeNormalizedCsvFile(normalized, normalizedPath);
     }
+    if (normalized.length) sessionTrades.set(sessionId, normalized);
 
     // Compute portfolio metrics via bias_engine.py for this upload
     let portfolioMetrics = null;
@@ -323,10 +394,6 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       const rawName = `${sessionId}-${path.basename(req.file.originalname || "upload.csv")}`;
       const rawPath = path.join(RAW_DIR, rawName);
       await fs.promises.writeFile(rawPath, req.file.buffer);
-
-      const normalizedCsv = buildNormalizedTradesCsv(normalized);
-      const normalizedPath = path.join(RAW_DIR, `${sessionId}-normalized.csv`);
-      await fs.promises.writeFile(normalizedPath, normalizedCsv);
 
       const pyResult = await runPythonMetrics(normalizedPath);
       portfolioMetrics = pyResult?.portfolio_metrics || null;
@@ -339,67 +406,31 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     if (!portfolioMetrics) {
       try {
-        portfolioMetrics = await computePortfolioMetricsForSession(sessionId, trades);
+        portfolioMetrics = await computePortfolioMetricsForSession(sessionId, normalized);
       } catch (err) {
         console.warn("Failed to compute portfolio metrics from normalized trades:", err?.message || err);
       }
     }
 
     // Session date range
-    const parsedDates = trades
-      .map((t) => new Date(t.ts))
-      .filter((d) => !Number.isNaN(d.valueOf()))
-      .sort((a, b) => a - b);
+    const dr = parsed.dateRange ?? dateRangeFromTrades(normalized);
+    const dateStart = dr.minTs ? dr.minTs.toISOString().slice(0, 10) : null;
+    const dateEnd = dr.maxTs ? dr.maxTs.toISOString().slice(0, 10) : null;
 
-    const dateStart = parsedDates.length ? parsedDates[0].toISOString().slice(0, 10) : null;
-    const dateEnd = parsedDates.length ? parsedDates[parsedDates.length - 1].toISOString().slice(0, 10) : null;
-
-    const conn = await getConnection();
-
-    // Ensure user exists
-    await exec(
-      conn,
-      `MERGE INTO CORE.USERS t
-       USING (SELECT ? AS USER_ID) s
-       ON t.USER_ID = s.USER_ID
-       WHEN NOT MATCHED THEN INSERT (USER_ID) VALUES (s.USER_ID)`,
-      [userId]
-    );
-
-    // Insert session (store mode in SOURCE for now)
-    await exec(
-      conn,
-      `INSERT INTO CORE.SESSIONS (SESSION_ID, USER_ID, SOURCE, NUM_TRADES, DATE_START, DATE_END)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [sessionId, userId, `upload_${mode}`, trades.length, dateStart, dateEnd]
-    );
-
-    // Batch insert trades
-    const values = trades.map(() => "(?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
-    const binds = trades.flatMap((t) => [
+    await persistSessionToSnowflake({
       sessionId,
-      String(t.tradeId),
-      t.ts,
-      t.side,
-      t.asset,
-      t.qty == null || t.qty === "" ? null : t.qty,
-      t.notional == null || t.notional === "" ? null : t.notional,
-      t.pl == null || t.pl === "" ? null : t.pl,
-    ]);
-
-    await exec(
-      conn,
-      `INSERT INTO CORE.TRADES (SESSION_ID, TRADE_ID, TS, SIDE, ASSET, QTY, NOTIONAL, PL)
-       SELECT * FROM VALUES ${values}`,
-      binds
-    );
-
-    conn.destroy();
+      userId,
+      trades: normalized,
+      metrics: portfolioMetrics ? { portfolio_metrics: portfolioMetrics } : null,
+      dateRange: dr,
+      source: `upload_${mode}`,
+      maxInsert: 10000,
+    });
 
     res.json({
       ok: true,
       sessionId,
-      tradesInserted: trades.length,
+      tradesInserted: normalized.length,
       dateStart,
       dateEnd,
       mode,
