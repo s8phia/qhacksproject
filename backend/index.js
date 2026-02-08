@@ -24,8 +24,8 @@ import {
 import { coachLikeInvestor } from "./gemini_coach.js";
 
 const require = createRequire(import.meta.url);
-const { runPythonMetrics } = require("./services/metrics.js");
-const { analyzeBias } = require("./services/gemini");
+const { runPythonMetrics } = require("./services/metrics.cjs");
+const { analyzeBias } = require("./services/gemini.cjs");
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,7 +45,46 @@ if (!fs.existsSync(RAW_DIR)) {
 }
 
 const sessionPortfolioMetrics = new Map();
+const sessionTrades = new Map(); // in-memory fallback when Snowflake is unavailable
 let lastUserTradesResult = null;
+
+function normalizeTrades(trades) {
+  return trades
+    .map((t) => {
+      const ts = new Date(t.ts);
+      if (Number.isNaN(ts.valueOf())) return null;
+      return {
+        ...t,
+        ts,
+        side: t.side ? String(t.side).toUpperCase() : null,
+        asset: t.asset ? String(t.asset).toUpperCase() : null,
+        qty: t.qty == null || t.qty === "" ? null : Number(t.qty),
+        notional: t.notional == null || t.notional === "" ? null : Number(t.notional),
+        pl: t.pl == null || t.pl === "" ? null : Number(t.pl),
+      };
+    })
+    .filter(Boolean);
+}
+
+async function getTradesForSession(sessionId) {
+  let trades = [];
+  let conn = null;
+
+  try {
+    conn = await getConnection();
+    trades = await fetchTrades(conn, sessionId);
+  } catch (err) {
+    console.warn("Snowflake fetch failed; using fallback if available:", err?.message || err);
+  } finally {
+    if (conn) conn.destroy();
+  }
+
+  if ((!trades || trades.length === 0) && sessionTrades.has(sessionId)) {
+    trades = sessionTrades.get(sessionId);
+  }
+
+  return trades;
+}
 
 function csvCell(value) {
   if (value === null || value === undefined || value === "") return "";
@@ -59,6 +98,7 @@ function csvCell(value) {
 function buildNormalizedTradesCsv(trades) {
   const header = "timestamp,side,asset,quantity,entry_price,profit_loss";
   const rows = trades.map((t) => {
+    const tsValue = t.ts instanceof Date ? t.ts.toISOString() : t.ts;
     const qty = t.qty == null || t.qty === "" ? null : Number(t.qty);
     const notional = t.notional == null || t.notional === "" ? null : Number(t.notional);
     const entryPrice = Number.isFinite(qty) && qty !== 0 && Number.isFinite(notional)
@@ -66,7 +106,7 @@ function buildNormalizedTradesCsv(trades) {
       : null;
 
     return [
-      t.ts,
+      tsValue,
       t.side,
       t.asset,
       qty,
@@ -146,17 +186,34 @@ app.post("/api/uploads/usertrades", upload.single("file"), async (req, res) => {
     const rawPath = path.join(RAW_DIR, safeName);
     await fs.promises.writeFile(rawPath, req.file.buffer);
 
-    const metrics = await runPythonMetrics(rawPath);
-    
     // Create session ID for this upload
     const sessionId = uuidv4();
     const userId = "demo-user";
-    
-    // Parse trades to create session
+
+    let metrics = null;
+
+    // Parse trades, normalize, and run metrics (critical path)
+    let normalized = [];
     try {
       const { trades } = parseUpload(req.file.buffer);
-      
-      const parsedDates = trades
+      normalized = normalizeTrades(trades);
+      if (normalized.length) {
+        sessionTrades.set(sessionId, normalized);
+      }
+
+      // Normalize CSV for Python metrics
+      const normalizedCsv = buildNormalizedTradesCsv(normalized);
+      const normalizedPath = path.join(RAW_DIR, `${sessionId}-normalized.csv`);
+      await fs.promises.writeFile(normalizedPath, normalizedCsv);
+      metrics = await runPythonMetrics(normalizedPath);
+    } catch (err) {
+      console.error("Upload parsing/metrics failed:", err);
+      return res.status(400).json({ error: "Normalization failed", message: err?.message || String(err) });
+    }
+
+    // Try to persist to Snowflake (non-blocking for response)
+    try {
+      const parsedDates = normalized
         .map((t) => new Date(t.ts))
         .filter((d) => !Number.isNaN(d.valueOf()))
         .sort((a, b) => a - b);
@@ -180,8 +237,8 @@ app.post("/api/uploads/usertrades", upload.single("file"), async (req, res) => {
       await exec(
         conn,
         `INSERT INTO CORE.SESSIONS (SESSION_ID, USER_ID, SOURCE, NUM_TRADES, DATE_START, DATE_END)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [sessionId, userId, "simple_upload", trades.length, dateStart, dateEnd]
+        VALUES (?, ?, ?, ?, ?, ?)`,
+        [sessionId, userId, "simple_upload", normalized.length, dateStart, dateEnd]
       );
 
       // Batch insert trades
@@ -254,8 +311,11 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     if (!req.file) return res.status(400).json({ ok: false, error: "Missing file field 'file'" });
 
     const { trades, mode } = parseUpload(req.file.buffer);
-
     const sessionId = uuidv4();
+    const normalized = normalizeTrades(trades);
+    if (normalized.length) {
+      sessionTrades.set(sessionId, normalized);
+    }
 
     // Compute portfolio metrics via bias_engine.py for this upload
     let portfolioMetrics = null;
@@ -264,13 +324,17 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       const rawPath = path.join(RAW_DIR, rawName);
       await fs.promises.writeFile(rawPath, req.file.buffer);
 
-      const pyResult = await runPythonMetrics(rawPath);
+      const normalizedCsv = buildNormalizedTradesCsv(normalized);
+      const normalizedPath = path.join(RAW_DIR, `${sessionId}-normalized.csv`);
+      await fs.promises.writeFile(normalizedPath, normalizedCsv);
+
+      const pyResult = await runPythonMetrics(normalizedPath);
       portfolioMetrics = pyResult?.portfolio_metrics || null;
       if (portfolioMetrics) {
         sessionPortfolioMetrics.set(sessionId, portfolioMetrics);
       }
     } catch (err) {
-      console.warn("Failed to compute portfolio metrics from raw upload:", err?.message || err);
+      console.warn("Failed to compute portfolio metrics from upload:", err?.message || err);
     }
 
     if (!portfolioMetrics) {
@@ -350,9 +414,11 @@ app.get("/analyze/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
 
   try {
-    const conn = await getConnection();
+    const trades = await getTradesForSession(sessionId);
+    if (!trades || trades.length === 0) {
+      return res.status(404).json({ ok: false, error: "No trades found for this session" });
+    }
 
-    const trades = await fetchTrades(conn, sessionId);
     const biases = computeBiases(trades);
 
     // metrics per your diagram
@@ -362,36 +428,40 @@ app.get("/analyze/:sessionId", async (req, res) => {
     // charts for UI
     const charts = chartData(trades);
 
-    // store bias metrics (scores + raw JSON)
-    await exec(
-      conn,
-      `MERGE INTO ANALYTICS.USER_BIAS_METRICS t
-       USING (SELECT ? AS SESSION_ID) s
-       ON t.SESSION_ID = s.SESSION_ID
-       WHEN MATCHED THEN UPDATE SET
-         OVERTRADING_SCORE = ?,
-         REVENGE_SCORE = ?,
-         LOSS_AVERSION_SCORE = ?,
-         BIAS_SUMMARY_JSON = ?,
-         COMPUTED_AT = CURRENT_TIMESTAMP()
-       WHEN NOT MATCHED THEN INSERT
-         (SESSION_ID, OVERTRADING_SCORE, REVENGE_SCORE, LOSS_AVERSION_SCORE, BIAS_SUMMARY_JSON)
-         VALUES (?, ?, ?, ?, ?)`,
-      [
-        sessionId,
-        biases.overtrading.score,
-        biases.revenge.score,
-        biases.lossAversion.score,
-        JSON.stringify(biases),
-        sessionId,
-        biases.overtrading.score,
-        biases.revenge.score,
-        biases.lossAversion.score,
-        JSON.stringify(biases),
-      ]
-    );
-
-    conn.destroy();
+    // store bias metrics (scores + raw JSON) if Snowflake is reachable
+    try {
+      const conn = await getConnection();
+      await exec(
+        conn,
+        `MERGE INTO ANALYTICS.USER_BIAS_METRICS t
+         USING (SELECT ? AS SESSION_ID) s
+         ON t.SESSION_ID = s.SESSION_ID
+         WHEN MATCHED THEN UPDATE SET
+           OVERTRADING_SCORE = ?,
+           REVENGE_SCORE = ?,
+           LOSS_AVERSION_SCORE = ?,
+           BIAS_SUMMARY_JSON = ?,
+           COMPUTED_AT = CURRENT_TIMESTAMP()
+         WHEN NOT MATCHED THEN INSERT
+           (SESSION_ID, OVERTRADING_SCORE, REVENGE_SCORE, LOSS_AVERSION_SCORE, BIAS_SUMMARY_JSON)
+           VALUES (?, ?, ?, ?, ?)`,
+        [
+          sessionId,
+          biases.overtrading.score,
+          biases.revenge.score,
+          biases.lossAversion.score,
+          JSON.stringify(biases),
+          sessionId,
+          biases.overtrading.score,
+          biases.revenge.score,
+          biases.lossAversion.score,
+          JSON.stringify(biases),
+        ]
+      );
+      conn.destroy();
+    } catch (err) {
+      console.warn("Skipping Snowflake bias upsert:", err?.message || err);
+    }
 
     const mode =
       trades.filter((t) => t.pl != null && t.pl !== "").length >= Math.max(2, Math.floor(trades.length * 0.3))
@@ -490,7 +560,10 @@ app.get("/compare/:sessionId/:investorId", async (req, res) => {
   try {
     const conn = await getConnection();
 
-    const trades = await fetchTrades(conn, sessionId);
+    const trades = await getTradesForSession(sessionId);
+    if (!trades || trades.length === 0) {
+      return res.status(404).json({ ok: false, error: "No trades found for this session" });
+    }
     const biases = computeBiases(trades);
 
     const investorVecRaw = await getInvestorVector(conn, investorId);
@@ -539,7 +612,10 @@ app.get("/coach/:sessionId/:investorId", async (req, res) => {
     const conn = await getConnection();
 
     // --- user side ---
-    const trades = await fetchTrades(conn, sessionId);
+    const trades = await getTradesForSession(sessionId);
+    if (!trades || trades.length === 0) {
+      return res.status(404).json({ ok: false, error: "No trades found for this session" });
+    }
     const biases = computeBiases(trades);
     const userMetrics = computeUserMetrics(trades);
     const normalizedMetrics = normalizeMetrics(userMetrics);

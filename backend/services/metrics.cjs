@@ -20,7 +20,7 @@ function resolvePythonExecutable() {
     }
 
 
-    return process.platform === "win32" ? "python" : "python3";
+    return "python";
 }
 
 
@@ -28,7 +28,12 @@ function runPythonMetrics(csvPath) {
     return new Promise((resolve, reject) => {
         const scriptPath = path.join(__dirname, "bias_engine.py");
         const pythonExec = resolvePythonExecutable();
-        const proc = spawn(pythonExec, [scriptPath, csvPath]);
+
+        // Suppress Python warnings on stdout (they broke JSON parsing)
+        const args = ["-W", "ignore", scriptPath, csvPath];
+        const env = { ...process.env, PYTHONWARNINGS: "ignore" };
+
+        const proc = spawn(pythonExec, args, { env });
 
 
         let stdout = "";
@@ -49,12 +54,28 @@ function runPythonMetrics(csvPath) {
             if (code !== 0) {
                 return reject(new Error(stderr || `Python exited with code ${code}`));
             }
-            try {
-                const parsed = JSON.parse(stdout.trim());
-                resolve(parsed);
-            } catch (err) {
-                reject(new Error("Failed to parse Python JSON output"));
+            const text = stdout.trim();
+
+            const tryParse = (payload) => {
+                try {
+                    return JSON.parse(payload);
+                } catch {
+                    return null;
+                }
+            };
+
+            let parsed = tryParse(text);
+            if (!parsed) {
+                const lastBrace = text.lastIndexOf("{");
+                if (lastBrace >= 0) {
+                    parsed = tryParse(text.slice(lastBrace));
+                }
             }
+
+            if (parsed) return resolve(parsed);
+
+            const detail = stderr || text || `Python exited with code ${code}`;
+            return reject(new Error(`Failed to parse Python JSON output: ${detail.slice(0, 400)}`));
         });
     });
 }

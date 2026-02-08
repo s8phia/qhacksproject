@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import PortfolioRadar from "@/app/components/RadarChart";
 import BiasPieChart from "@/app/components/BiasPieChart";
 import CountUp from "@/app/components/CountUp";
+import PortfolioTimeline from "@/app/components/PortfolioTimeline";
 
 type ProfileData = {
   name: string;
@@ -79,6 +80,7 @@ export default function ProfilePage() {
     const [coachingData, setCoachingData] = useState<any>(null);
     const [coachingLoading, setCoachingLoading] = useState(false);
     const [coachingError, setCoachingError] = useState<string | null>(null);
+    const [sessionId, setSessionId] = useState<string | null>(null);
 
     // 🔽 only for dumping / debugging
     const [rawApiData, setRawApiData] = useState<any>(null);
@@ -103,6 +105,13 @@ export default function ProfilePage() {
             }
             const data = await res.json();
             setRawApiData(data);
+            const uploadSessionId = data.sessionId || (typeof window !== 'undefined' ? localStorage.getItem('sessionId') : null);
+            if (uploadSessionId) {
+              setSessionId(uploadSessionId);
+              if (typeof window !== 'undefined') {
+                localStorage.setItem('sessionId', uploadSessionId);
+              }
+            }
 
             const pm = data.metrics?.portfolio_metrics;
             const biasTypeRatios = data.metrics?.bias_type_ratios ?? null;
@@ -144,7 +153,7 @@ export default function ProfilePage() {
                 .then(async (analysisRes) => {
                   const analysisData = await analysisRes.json().catch(() => ({}));
                   if (analysisRes.ok) {
-                    setGeminiAnalysis(analysisData);
+                    setGeminiAnalysis(Array.isArray(analysisData) ? {} : analysisData);
                   } else {
                     setGeminiError(analysisData?.error || "Failed to generate analysis");
                   }
@@ -156,17 +165,16 @@ export default function ProfilePage() {
             }
 
             // Fetch coaching comparison
-            const sessionId = data.sessionId || localStorage.getItem('sessionId');
             const persona = PERSONAS.find(p => p.slug === slug);
-            if (sessionId && persona?.investorId) {
+            if (uploadSessionId && persona?.investorId) {
               setCoachingLoading(true);
               setCoachingError(null);
               
-              fetch(`http://localhost:3001/coach/${sessionId}/${persona.investorId}`)
+              fetch(`http://localhost:3001/coach/${uploadSessionId}/${persona.investorId}`)
                 .then(async (coachRes) => {
                   const coachData = await coachRes.json().catch(() => ({}));
                   if (coachRes.ok) {
-                    setCoachingData(coachData);
+                    setCoachingData(Array.isArray(coachData) ? {} : coachData);
                   } else {
                     setCoachingError(coachData?.error || "Failed to generate coaching");
                   }
@@ -204,7 +212,8 @@ export default function ProfilePage() {
     const revengeTrading = behavioral?.revenge_trading;
     const formatNumber = (value: number | null | undefined, digits = 2) =>
         value == null || Number.isNaN(value) ? "--" : value.toFixed(digits);
-    const formatLabel = (str: string) => {
+    const formatLabel = (str: string | undefined | null) => {
+        if (!str || typeof str !== 'string') return '--';
         return str
             .split('_')
             .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
@@ -413,6 +422,13 @@ export default function ProfilePage() {
                 )}
             </div>
             </div>
+        </section>
+
+        <section className="mt-10 mb-10">
+          <h3 className="text-lg font-semibold mb-4">
+            Portfolio timeline
+          </h3>
+          <PortfolioTimeline sessionId={sessionId} />
         </section>
 
       <section className="grid grid-cols-1 md:grid-cols-2 gap-10">
