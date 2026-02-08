@@ -59,18 +59,20 @@ export default function Home() {
   };
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden">
-      <div className="absolute inset-0 z-0">
-        <div className="absolute w-72 h-72 rounded-full bg-[#1e0237] blur-3xl opacity-40 top-[250px] left-[250px]"></div>
-        <div className="absolute w-96 h-96 rounded-full bg-[#561557] blur-3xl opacity-40 top-[30px] left-[600px]"></div>
-        <div className="absolute w-96 h-96 rounded-full bg-[#561557] blur-3xl opacity-40 top-[40px] left-[200px]"></div>
-        <div className="absolute w-72 h-72 rounded-full bg-[#561557] blur-3xl opacity-30 top-[300px] left-[500px]"></div>
-        <div className="absolute w-50 h-50 rounded-full bg-[#ffae51] blur-3xl opacity-50 top-[90px] left-[430px]"></div>
-        <div className="absolute w-20 h-20 rounded-full bg-[#c0207b] blur-2xl opacity-20 top-[200px] left-[700px]"></div>
-        <div className="absolute w-90 h-90 rounded-full bg-[#1e0237] blur-3xl opacity-60 top-[160px] left-[700px]"></div>
-        <div className="absolute w-20 h-20 rounded-full bg-[#ffae51] blur-3xl opacity-50 top-[80px] left-[700px]"></div>
-        <div className="absolute w-20 h-20 rounded-full bg-[#561557] blur-2xl opacity-60 top-[350px] left-[400px]"></div>
-        <div className="absolute w-80 h-80 rounded-full bg-[#c0207b] blur-3xl opacity-50 top-[100px] left-[500px]"></div>
+    <div className="relative h-screen w-screen overflow-hidden bg-[#0c0810]">
+      <div className="absolute inset-0 z-0 flex justify-center items-start">
+        <div className="relative w-[800px] h-[600px]">
+          <div className="absolute w-72 h-72 rounded-full bg-[#1e0237] blur-3xl opacity-40 top-10 left-4"></div>
+          <div className="absolute w-96 h-96 rounded-full bg-[#561557] blur-3xl opacity-40 top-32 left-56"></div>
+          <div className="absolute w-96 h-96 rounded-full bg-[#561557] blur-3xl opacity-40 top-32 left-80"></div>
+          <div className="absolute w-72 h-72 rounded-full bg-[#561557] blur-3xl opacity-30 top-40 left-96"></div>
+          <div className="absolute w-50 h-50 rounded-full bg-[#ffae51] blur-3xl opacity-50 top-40 left-80"></div>
+          <div className="absolute w-20 h-20 rounded-full bg-[#c0207b] blur-2xl opacity-20 top-5 left-56"></div>
+          <div className="absolute w-90 h-90 rounded-full bg-[#1e0237] blur-3xl opacity-60 top-36 left-20"></div>
+          <div className="absolute w-20 h-20 rounded-full bg-[#ffae51] blur-3xl opacity-50 top-72 left-80"></div>
+          <div className="absolute w-20 h-20 rounded-full bg-[#561557] blur-2xl opacity-60 top-28 left-64"></div>
+          <div className="absolute w-80 h-80 rounded-full bg-[#c0207b] blur-3xl opacity-50 top-40 left-1/2 -translate-x-1/2"></div>
+        </div>
       </div>
       <div className="absolute inset-0 z-10 pointer-events-none opacity-10 mix-blend-overlay">
         <Image src="/noise_overlay.png" alt="Noise" fill className="object-cover" />
