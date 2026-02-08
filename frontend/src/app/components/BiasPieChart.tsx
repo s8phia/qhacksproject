@@ -22,6 +22,7 @@ type Props = {
 };
 
 export default function BiasPieChart({ ratios, showSummary = true }: Props) {
+
   const data = Object.keys(LABELS).map((key, index) => ({
     id: index,
     label: LABELS[key],
@@ -47,6 +48,7 @@ export default function BiasPieChart({ ratios, showSummary = true }: Props) {
           }
         ]}
       />
+
 
       {showSummary && (
         <div className="mt-3 text-sm text-gray-600">
