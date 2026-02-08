@@ -136,6 +136,15 @@ def main():
     martingale_stats_raw = df.groupby('prev_loss_streak')['trade_value'].mean().to_dict()
     martingale_stats = {int(k): float(0 if pd.isna(v) or np.isinf(v) else v) for k, v in martingale_stats_raw.items()}
 
+    # Avoid NaN/inf in tilt calculation (common when overall_mean is 0)
+    baseline = overall_mean if overall_mean and np.isfinite(overall_mean) else None
+    tilt_base = martingale_stats.get(6, baseline)
+    tilt_indicator_pct = 0.0
+    if tilt_base is not None and baseline and baseline != 0:
+        ratio = tilt_base / baseline if baseline else 1.0
+        if np.isfinite(ratio) and ratio > 0:
+            tilt_indicator_pct = round(sigmoid_norm(ratio, 1.0, 5.0) * 100, 2)
+
     bias_type_ratios = None
     if use_ml and classify_with_ml is not None:
         cls_df = stride_sample(df, 120000)
@@ -155,11 +164,11 @@ def main():
                 "disposition_ratio": (avg_loss / avg_win) if avg_win else 1.0,
             },
             "revenge_trading": {
-            "martingale_stats": martingale_stats,
-            "tilt_indicator_pct": round(sigmoid_norm(martingale_stats.get(6, overall_mean)/overall_mean, 1.0, 5.0)*100, 2) if 6 in martingale_stats else 0
-        }
-    },
-    "portfolio_metrics": compute_user_portfolio_metrics(df)
+                "martingale_stats": martingale_stats,
+                "tilt_indicator_pct": tilt_indicator_pct,
+            },
+        },
+        "portfolio_metrics": compute_user_portfolio_metrics(df)
     }
     # Ensure JSON has no NaN/inf
     clean = json.loads(json.dumps(result, allow_nan=False))

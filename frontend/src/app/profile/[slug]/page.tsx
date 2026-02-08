@@ -210,6 +210,11 @@ export default function ProfilePage() {
     const overtrading = behavioral?.overtrading;
     const lossAversion = behavioral?.loss_aversion;
     const revengeTrading = behavioral?.revenge_trading;
+    const martingaleStats = revengeTrading?.martingale_stats || null;
+    const martingaleHasSignal =
+        (typeof revengeTrading?.tilt_indicator_pct === 'number' && revengeTrading.tilt_indicator_pct > 0.1) ||
+        (martingaleStats &&
+            Object.values(martingaleStats).some((v: any) => Number.isFinite(Number(v)) && Number(v) > 0.001));
     const formatNumber = (value: number | null | undefined, digits = 2) =>
         value == null || Number.isNaN(value) ? "--" : value.toFixed(digits);
     const formatLabel = (str: string | undefined | null) => {
@@ -385,19 +390,26 @@ export default function ProfilePage() {
                 </span>
                 </p>
                 
-                {revengeTrading?.martingale_stats && Object.keys(revengeTrading.martingale_stats).length > 0 ? (
+                {martingaleStats && Object.keys(martingaleStats).length > 0 ? (
                 <div className="mt-3">
                     <p className="text-xs font-semibold text-gray-700 mb-2">Martingale Escalation:</p>
+                    {martingaleHasSignal ? (
                     <div className="space-y-1 max-h-48 overflow-y-auto">
-                    {Object.entries(revengeTrading.martingale_stats)
+                    {Object.entries(martingaleStats)
                         .sort(([a], [b]) => Number(a) - Number(b))
                         .slice(0, 12)
                         .map(([streak, avgSize]) => {
                         const streakNum = Number(streak);
                         const size = Number(avgSize);
-                        const baselineSize = revengeTrading.martingale_stats[0] || size;
-                        const pctChange = ((size - baselineSize) / baselineSize) * 100;
-                        const isDangerous = Math.abs(pctChange) > 20 && streakNum > 0;
+                        const baselineSize = Number(martingaleStats[0] ?? 0);
+                        const hasBaseline = Number.isFinite(baselineSize) && baselineSize !== 0;
+                        const pctChange = hasBaseline ? ((size - baselineSize) / baselineSize) * 100 : 0;
+                        const isDangerous = hasBaseline && Math.abs(pctChange) > 20 && streakNum > 0;
+                        const pctLabel = streakNum > 0
+                            ? hasBaseline
+                                ? `(${pctChange > 0 ? '+' : ''}${pctChange.toFixed(0)}%)`
+                                : "(n/a)"
+                            : "";
                         
                         return (
                             <div key={streak} className={`text-xs flex justify-between ${isDangerous ? 'text-red-600 font-semibold' : 'text-gray-600'}`}>
@@ -405,17 +417,15 @@ export default function ProfilePage() {
                                 {streakNum === 0 ? 'Baseline' : `After ${streakNum} loss${streakNum > 1 ? 'es' : ''}`}:
                             </span>
                             <span>
-                                ${size.toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                                {streakNum > 0 && (
-                                <span className="ml-1">
-                                    ({pctChange > 0 ? '+' : ''}{pctChange.toFixed(0)}%)
-                                </span>
-                                )}
+                                ${Number.isFinite(size) ? size.toLocaleString('en-US', { maximumFractionDigits: 0 }) : '--'} {pctLabel}
                             </span>
                             </div>
                         );
                         })}
                     </div>
+                    ) : (
+                        <p className="text-xs text-gray-500 mt-2">No escalation detected (sizes flat).</p>
+                    )}
                 </div>
                 ) : (
                 <p className="text-xs text-gray-500 mt-2">No martingale data</p>
