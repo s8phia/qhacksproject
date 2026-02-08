@@ -11,10 +11,12 @@ import { fetchTrades, computeBiases, coachingFromBiases, chartData } from "./bia
 import { computeUserMetrics, normalizeMetrics } from "./metrics.js";
 import { getInvestorVector, computeUserVector, alignmentScore } from "./alignment.js";
 
+import { coachLikeInvestor } from "./gemini_coach.js";
+
 const app = express();
-const upload = multer({ 
+const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 } 
+  limits: { fileSize: 50 * 1024 * 1024 },
 });
 
 app.get("/health", async (req, res) => {
@@ -255,9 +257,11 @@ app.get("/compare/:sessionId/:investorId", async (req, res) => {
     const trades = await fetchTrades(conn, sessionId);
     const biases = computeBiases(trades);
 
-    const investorVec = await getInvestorVector(conn, investorId);
-    const userVec = computeUserVector(trades, biases);
-    const alignment = alignmentScore(userVec, investorVec);
+    const investorVecRaw = await getInvestorVector(conn, investorId);
+    const investorVector = typeof investorVecRaw === "string" ? JSON.parse(investorVecRaw) : investorVecRaw;
+
+    const userVector = computeUserVector(trades, biases);
+    const alignment = alignmentScore(userVector, investorVector);
 
     conn.destroy();
 
@@ -266,11 +270,130 @@ app.get("/compare/:sessionId/:investorId", async (req, res) => {
       sessionId,
       investorId,
       alignment,
-      userVector: userVec,
-      investorVector: typeof investorVec === "string" ? JSON.parse(investorVec) : investorVec,
+      userVector,
+      investorVector,
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+/**
+ * NEW:
+ * GET /coach/:sessionId/:investorId
+ *
+ * Computes comparison for chosen investor, then sends payload to Gemini
+ * so Gemini returns “how to be more like X investor”.
+ */
+app.get("/coach/:sessionId/:investorId", async (req, res) => {
+  const { sessionId, investorId } = req.params;
+  const includeHoldings = String(req.query.holdings || "0") === "1";
+
+  try {
+    const conn = await getConnection();
+
+    // --- user side ---
+    const trades = await fetchTrades(conn, sessionId);
+    const biases = computeBiases(trades);
+    const userMetrics = computeUserMetrics(trades);
+    const normalizedMetrics = normalizeMetrics(userMetrics);
+
+    const userVector = computeUserVector(trades, biases);
+
+    // --- investor side ---
+    const invRows = await exec(conn, `SELECT * FROM CORE.INVESTORS WHERE INVESTOR_ID = ? LIMIT 1`, [investorId]);
+    const investorMeta = invRows?.[0] || { INVESTOR_ID: investorId };
+
+    const investorVecRaw = await getInvestorVector(conn, investorId);
+    const investorVector = typeof investorVecRaw === "string" ? JSON.parse(investorVecRaw) : investorVecRaw;
+
+    const alignment = alignmentScore(userVector, investorVector);
+
+    // optional: pull latest quarter metrics as extra context (cheap)
+    const qRows = await exec(
+      conn,
+      `SELECT REPORT_PERIOD, HOLDINGS_COUNT, TOTAL_VALUE_USD_THOUSANDS,
+              TOP10_CONCENTRATION, TURNOVER_PROXY, CONSISTENCY_PROXY
+       FROM TRADE_SHIELD.ANALYTICS.INVESTOR_QUARTER_METRICS
+       WHERE INVESTOR_ID = ?
+       ORDER BY REPORT_PERIOD DESC
+       LIMIT 1`,
+      [investorId]
+    );
+    const latestQuarter = qRows?.[0] || null;
+
+    // optional: pull top holdings (more tokens, so off by default)
+    let holdings = null;
+    if (includeHoldings) {
+      const rpRows = await exec(
+        conn,
+        `SELECT MAX(REPORT_PERIOD) AS RP
+         FROM TRADE_SHIELD.ANALYTICS.INVESTOR_13F_HOLDINGS
+         WHERE INVESTOR_ID = ?`,
+        [investorId]
+      );
+      const rp = rpRows?.[0]?.RP ? String(rpRows[0].RP).slice(0, 10) : null;
+
+      if (rp) {
+        holdings = await exec(
+          conn,
+          `SELECT ISSUER, TITLE_OF_CLASS, CUSIP, VALUE_USD_THOUSANDS, SHARES
+           FROM TRADE_SHIELD.ANALYTICS.INVESTOR_13F_HOLDINGS
+           WHERE INVESTOR_ID = ? AND REPORT_PERIOD = ?
+           ORDER BY VALUE_USD_THOUSANDS DESC
+           LIMIT 15`,
+          [investorId, rp]
+        );
+      } else {
+        holdings = [];
+      }
+    }
+
+    // --- payload to Gemini ---
+    const payload = {
+      sessionId,
+      investor: {
+        investorId: investorMeta.INVESTOR_ID || investorId,
+        displayName: investorMeta.DISPLAY_NAME || investorMeta.DISPLAY || null,
+        category: investorMeta.CATEGORY || null,
+        source: investorMeta.SOURCE || null,
+      },
+      user: {
+        userVector,
+        userMetrics,
+        normalizedMetrics,
+        biases, // includes evidence & scores already
+      },
+      target: {
+        investorVector,
+        latestQuarter,
+        holdings,
+      },
+      alignment, // score + gaps
+      constraints: {
+        focusTraits: ["trade_frequency", "holding_patience", "risk_reactivity", "consistency"],
+        goal: "Make the user trade more like the target investor, by reducing mismatches in the vector while addressing detected biases.",
+      },
+    };
+
+    const coaching = await coachLikeInvestor(payload);
+
+    conn.destroy();
+
+    res.json({
+      ok: true,
+      sessionId,
+      investorId,
+      comparison: {
+        investor: payload.investor,
+        alignment,
+        userVector,
+        investorVector,
+      },
+      coaching,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
   }
 });
 
