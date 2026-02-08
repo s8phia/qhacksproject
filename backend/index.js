@@ -1,27 +1,35 @@
-require('dotenv').config();
+require("dotenv").config();
+
 const { runPythonMetrics } = require("./services/metrics");
 const cors = require("cors");
-const express = require('express');
-const { analyzeBias } = require('./services/gemini');
+const express = require("express");
+const { analyzeBias } = require("./services/gemini");
 const multer = require("multer");
 const path = require("path");
-const app = express();
-app.use(cors());
-const PORT = process.env.PORT || 3001;
 const fs = require("fs");
 
+const app = express();
+app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => {
-  res.json({ message: 'Backend is running' });
+const PORT = process.env.PORT || 3001;
+
+/**
+ * Store the most recent usertrades result in memory
+ * (so the profile page can fetch it)
+ */
+let lastUserTradesResult = null;
+
+app.get("/", (req, res) => {
+  res.json({ message: "Backend is running" });
 });
 
-app.post('/api/analyze', async (req, res) => {
+app.post("/api/analyze", async (req, res) => {
   const { transactions, archetype } = req.body || {};
 
   if (!Array.isArray(transactions) || !archetype) {
     return res.status(400).json({
-      error: 'Invalid payload. Provide transactions[] and archetype.',
+      error: "Invalid payload. Provide transactions[] and archetype."
     });
   }
 
@@ -30,12 +38,15 @@ app.post('/api/analyze', async (req, res) => {
     return res.json(result);
   } catch (error) {
     return res.status(500).json({
-      error: 'Failed to analyze bias.',
-      details: error?.message || 'Unknown error',
+      error: "Failed to analyze bias.",
+      details: error?.message || "Unknown error"
     });
   }
 });
 
+/* -----------------------------
+   Upload + metrics
+----------------------------- */
 
 const RAW_DIR = path.join(__dirname, "uploads", "usertrades");
 
@@ -68,19 +79,21 @@ app.post(
   "/api/uploads/usertrades",
   upload.single("file"),
   async (req, res) => {
-
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
+
     try {
       const csvPath = req.file.path;
       const metrics = await runPythonMetrics(csvPath);
 
-      res.json({
+      lastUserTradesResult = {
         ok: true,
         filename: req.file.filename,
         metrics
-      });
+      };
+
+      res.json(lastUserTradesResult);
 
     } catch (err) {
       console.error(err);
@@ -91,6 +104,20 @@ app.post(
     }
   }
 );
+
+/* -----------------------------
+   GET route for profile page
+----------------------------- */
+
+app.get("/api/uploads/usertrades", (req, res) => {
+  if (!lastUserTradesResult) {
+    return res.status(404).json({
+      error: "No user trades have been uploaded yet"
+    });
+  }
+
+  res.json(lastUserTradesResult);
+});
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
