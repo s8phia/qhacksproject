@@ -204,6 +204,12 @@ export default function ProfilePage() {
     const revengeTrading = behavioral?.revenge_trading;
     const formatNumber = (value: number | null | undefined, digits = 2) =>
         value == null || Number.isNaN(value) ? "--" : value.toFixed(digits);
+    const formatLabel = (str: string) => {
+        return str
+            .split('_')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+            .join(' ');
+    };
     const biasLabels: Record<string, string> = {
         overtrader: "overtrader",
         loss_aversion: "loss-averse trader",
@@ -364,12 +370,47 @@ export default function ProfilePage() {
                 <h4 className="text-base font-semibold mb-2">
                 Revenge trading
                 </h4>
-                <p className="text-sm text-gray-600">
-                Tilt indicator: {formatNumber(revengeTrading?.tilt_indicator_pct)}%
+                <p className="text-sm text-gray-600 mb-3">
+                Tilt indicator: <span className={`font-semibold ${revengeTrading?.tilt_indicator_pct && revengeTrading.tilt_indicator_pct > 60 ? 'text-red-600' : ''}`}>
+                    {formatNumber(revengeTrading?.tilt_indicator_pct)}%
+                </span>
                 </p>
-                <p className="text-sm text-gray-600">
-                Martingale buckets: {revengeTrading?.martingale_stats ? Object.keys(revengeTrading.martingale_stats).length : "--"}
-                </p>
+                
+                {revengeTrading?.martingale_stats && Object.keys(revengeTrading.martingale_stats).length > 0 ? (
+                <div className="mt-3">
+                    <p className="text-xs font-semibold text-gray-700 mb-2">Martingale Escalation:</p>
+                    <div className="space-y-1 max-h-48 overflow-y-auto">
+                    {Object.entries(revengeTrading.martingale_stats)
+                        .sort(([a], [b]) => Number(a) - Number(b))
+                        .slice(0, 12)
+                        .map(([streak, avgSize]) => {
+                        const streakNum = Number(streak);
+                        const size = Number(avgSize);
+                        const baselineSize = revengeTrading.martingale_stats[0] || size;
+                        const pctChange = ((size - baselineSize) / baselineSize) * 100;
+                        const isDangerous = Math.abs(pctChange) > 20 && streakNum > 0;
+                        
+                        return (
+                            <div key={streak} className={`text-xs flex justify-between ${isDangerous ? 'text-red-600 font-semibold' : 'text-gray-600'}`}>
+                            <span>
+                                {streakNum === 0 ? 'Baseline' : `After ${streakNum} loss${streakNum > 1 ? 'es' : ''}`}:
+                            </span>
+                            <span>
+                                ${size.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                                {streakNum > 0 && (
+                                <span className="ml-1">
+                                    ({pctChange > 0 ? '+' : ''}{pctChange.toFixed(0)}%)
+                                </span>
+                                )}
+                            </span>
+                            </div>
+                        );
+                        })}
+                    </div>
+                </div>
+                ) : (
+                <p className="text-xs text-gray-500 mt-2">No martingale data</p>
+                )}
             </div>
             </div>
         </section>
@@ -467,7 +508,7 @@ export default function ProfilePage() {
                 <ul className="space-y-2">
                   {coachingData.coaching.keyGaps.map((gap: any, idx: number) => (
                     <li key={idx} className="text-sm text-gray-700">
-                      <span className="font-medium">{gap.dimension}:</span> {gap.description}
+                      <span className="font-medium">{formatLabel(gap.dimension)}:</span> {gap.description}
                     </li>
                   ))}
                 </ul>
@@ -489,7 +530,7 @@ export default function ProfilePage() {
                       </ul>
                       {action.targetThreshold && (
                         <p className="text-xs text-gray-500 mt-1">
-                          Target: {action.metric} {action.targetThreshold}
+                          Target: {formatLabel(action.metric)} {action.targetThreshold}
                         </p>
                       )}
                     </div>
