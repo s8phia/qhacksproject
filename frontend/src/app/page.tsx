@@ -5,46 +5,55 @@ import { useRouter } from "next/navigation";
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
+  const [result, setResult] = useState<string>("");   // 👈 same as simple page
   const router = useRouter();
 
-  //file selection
+  // file selection
   const fileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setFile(e.target.files[0]);
     }
   };
 
-  //remove file
+  // remove file
   const removeFile = () => {
     setFile(null);
+    setResult("");
   };
 
-  //navigate to next page
+  // upload + then go to next page
   const confirmUpload = async () => {
     if (!file) return;
 
     const formData = new FormData();
     formData.append("file", file);
+
+    setResult("Uploading...");
+
     try {
       const res = await fetch("http://localhost:3001/api/uploads/usertrades", {
         method: "POST",
         body: formData,
       });
 
-      if (!res.ok) {
-        const err = await res.json();
-        alert(`Upload failed: ${err?.error || "Unknown error"}`);
+      let data: any = null;
+
+      try {
+        data = await res.json();
+        setResult(JSON.stringify(data.metrics ?? {}, null, 2));
+      } catch {
+        setResult("Upload complete, but failed to parse metrics.");
         return;
       }
 
-      const data = await res.json();
-      console.log("Metrics:", data);
+      // only move on if upload succeeded
+      if (res.ok) {
+        router.push("/select-person");
+      }
 
-      router.push("/select-person");
-
-    } catch (err) {
+    } catch (err: any) {
       console.error("Upload failed", err);
-      alert("Upload failed");
+      setResult("Upload failed: " + err?.message);
     }
   };
 
@@ -82,12 +91,20 @@ export default function Home() {
               onClick={removeFile}
               className="font-bold hover:text-white"
               aria-label="Remove file"
+              type="button"
             >
               x
             </button>
           </div>
         ) : (
           <span className="text-gray-500">No file selected</span>
+        )}
+
+        {/* 🔽 same debug output as your simple page */}
+        {result && (
+          <pre className="mt-4 text-xs bg-gray-100 p-3 rounded max-w-xl overflow-auto">
+            {result}
+          </pre>
         )}
       </div>
     </main>
