@@ -1,6 +1,8 @@
 "use client";
 
+
 import { PieChart } from "@mui/x-charts/PieChart";
+
 
 const LABELS: Record<string, string> = {
   overtrader: "Overtrading",
@@ -9,19 +11,23 @@ const LABELS: Record<string, string> = {
   calm_trader: "Calm trading"
 };
 
+
 const COLORS: Record<string, string> = {
-  overtrader: "#ef4444",
-  loss_aversion: "#f59e0b",
-  revenge_trader: "#8b5cf6",
-  calm_trader: "#10b981"
+  overtrader: "#c0207b",
+  loss_aversion: "#1e0237",
+  revenge_trader: "#0c0810",
+  calm_trader: "#561557"
 };
+
 
 type Props = {
   ratios: Record<string, number>;
   showSummary?: boolean;
 };
 
+
 export default function BiasPieChart({ ratios, showSummary = true }: Props) {
+
 
   const data = Object.keys(LABELS).map((key, index) => ({
     id: index,
@@ -30,13 +36,15 @@ export default function BiasPieChart({ ratios, showSummary = true }: Props) {
     color: COLORS[key]
   }));
 
+
   const top = data.reduce(
     (acc, item) => (item.value > acc.value ? item : acc),
     data[0]
   );
 
+
   return (
-    <div className="w-full">
+    <div className="w-full flex flex-col items-center">
       <PieChart
         height={240}
         margin={{ top: 10, right: 10, bottom: 10, left: 10 }}
@@ -44,26 +52,32 @@ export default function BiasPieChart({ ratios, showSummary = true }: Props) {
           {
             data,
             highlightScope: { faded: "global", highlighted: "item" },
-            faded: { innerRadius: 28, additionalRadius: -10 }
-          }
+            faded: { innerRadius: 28, additionalRadius: -10 },
+          },
         ]}
+        slotProps={{
+          legend: { hidden: true },
+        }}
       />
 
 
+
+
       {showSummary && (
-        <div className="mt-3 text-sm text-gray-600">
-          <span className="font-semibold text-gray-800">
+        <div className="mt-8 text-sm text-white">
+          <span className="font-semibold text-white">
             Highest bias:
           </span>{" "}
           {top.label} ({top.value.toFixed(1)}%)
         </div>
       )}
 
-      <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-600">
+
+      <div className="mt-8 w-fit grid grid-cols-2 gap-x-16 gap-y-2 text-xs text-[#8A789A]">
         {data.map((item) => (
-          <div key={item.id} className="flex items-center gap-2">
+          <div key={item.id} className="flex items-center gap-4">
             <span
-              className="inline-block h-2 w-2 rounded-full"
+              className="inline-block h-4 w-4 rounded-full"
               style={{ backgroundColor: item.color }}
             />
             <span>
@@ -75,3 +89,5 @@ export default function BiasPieChart({ ratios, showSummary = true }: Props) {
     </div>
   );
 }
+
+

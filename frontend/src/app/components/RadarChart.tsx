@@ -31,7 +31,7 @@ type Props = {
 export default function RadarChart({
   result,
   label = "Your trading profile",
-  color = "54,162,235"
+  color = "192,32,123"
 }: Props) {
   if (!result?.normalizedMetrics) return null;
 
@@ -73,7 +73,7 @@ export default function RadarChart({
         ],
         fill: true,
         backgroundColor: isDark
-          ? "rgba(255,255,255,0.12)"
+          ? "rgba(192, 32, 123, 0.3)"
           : `rgba(${color}, 0.18)`,
 
         borderColor: isDark
@@ -137,9 +137,7 @@ export default function RadarChart({
       className="
         h-[260px]
         rounded-lg
-        bg-blue-50
-        dark:bg-slate-800
-        p-2
+       color:  #ffffff
       "
     >
       <Radar

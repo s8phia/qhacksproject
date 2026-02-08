@@ -62,402 +62,431 @@ const HARDCODED_PERSONA_RADAR: Record<string, any> = {
 };
 
 export default function ProfilePage() {
-    const params = useParams();
-    const slug = params.slug as string;
-    const router = useRouter();
+  const params = useParams();
+  const slug = params.slug as string;
+  const router = useRouter();
 
-    const [profile, setProfile] = useState<ProfileData | null>(null);
-    const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState<ProfileData | null>(null);
+  const [loading, setLoading] = useState(true);
 
-    const [personaResult, setPersonaResult] = useState<any>(null);
+  const [personaResult, setPersonaResult] = useState<any>(null);
 
-    // 🔽 this comes from your backend now
-    const [analysisResult, setAnalysisResult] = useState<any>(null);
-    const [biasRatios, setBiasRatios] = useState<Record<string, number> | null>(null);
-    const [geminiAnalysis, setGeminiAnalysis] = useState<{ summary?: string; suggestions?: string[] } | null>(null);
-    const [geminiError, setGeminiError] = useState<string | null>(null);
-    const [coachingData, setCoachingData] = useState<any>(null);
-    const [coachingLoading, setCoachingLoading] = useState(false);
-    const [coachingError, setCoachingError] = useState<string | null>(null);
+  // 🔽 this comes from your backend now
+  const [analysisResult, setAnalysisResult] = useState<any>(null);
+  const [biasRatios, setBiasRatios] = useState<Record<string, number> | null>(null);
+  const [geminiAnalysis, setGeminiAnalysis] = useState<{ summary?: string; suggestions?: string[] } | null>(null);
+  const [geminiError, setGeminiError] = useState<string | null>(null);
+  const [coachingData, setCoachingData] = useState<any>(null);
+  const [coachingLoading, setCoachingLoading] = useState(false);
+  const [coachingError, setCoachingError] = useState<string | null>(null);
 
-    // 🔽 only for dumping / debugging
-    const [rawApiData, setRawApiData] = useState<any>(null);
+  // 🔽 only for dumping / debugging
+  const [rawApiData, setRawApiData] = useState<any>(null);
 
-    useEffect(() => {
-        if (!slug) return;
+  useEffect(() => {
+    if (!slug) return;
 
-        setLoading(true);
+    setLoading(true);
 
-        setProfile({
-        name: slug.replace(/-/g, " ")
-        });
+    setProfile({
+      name: slug.replace(/-/g, " ")
+    });
 
-        setPersonaResult(HARDCODED_PERSONA_RADAR[slug]);
+    setPersonaResult(HARDCODED_PERSONA_RADAR[slug]);
 
-        const load = async () => {
-          try {
-            // pull latest uploaded metrics
-            const res = await fetch("http://localhost:3001/api/uploads/usertrades");
-            if (!res.ok) {
-              throw new Error("No uploaded data yet");
+    const load = async () => {
+      try {
+        // pull latest uploaded metrics
+        const res = await fetch("http://localhost:3001/api/uploads/usertrades");
+        if (!res.ok) {
+          throw new Error("No uploaded data yet");
+        }
+        const data = await res.json();
+        setRawApiData(data);
+
+        const pm = data.metrics?.portfolio_metrics;
+        const biasTypeRatios = data.metrics?.bias_type_ratios ?? null;
+
+        if (!pm) {
+          setAnalysisResult(null);
+          setBiasRatios(biasTypeRatios);
+        } else {
+          const radarData = {
+            normalizedMetrics: {
+              trade_frequency: pm.trade_frequency_score / 100,
+              holding_period: pm.holding_patience_score / 100,
+              after_loss: pm.risk_reactivity_score / 100,
+
+              // you do not currently have real backend values for these two
+              // so we map something reasonable for now
+              avg_trade_size: pm.consistency_score / 100,
+              size_variability: pm.consistency_score / 100
             }
-            const data = await res.json();
-            setRawApiData(data);
+          };
 
-            const pm = data.metrics?.portfolio_metrics;
-            const biasTypeRatios = data.metrics?.bias_type_ratios ?? null;
+          setAnalysisResult(radarData);
+          setBiasRatios(biasTypeRatios);
+        }
 
-            if (!pm) {
-              setAnalysisResult(null);
-              setBiasRatios(biasTypeRatios);
-            } else {
-              const radarData = {
-                normalizedMetrics: {
-                  trade_frequency: pm.trade_frequency_score / 100,
-                  holding_period: pm.holding_patience_score / 100,
-                  after_loss: pm.risk_reactivity_score / 100,
+        // Show page immediately, don't wait for Gemini
+        setLoading(false);
 
-                  // you do not currently have real backend values for these two
-                  // so we map something reasonable for now
-                  avg_trade_size: pm.consistency_score / 100,
-                  size_variability: pm.consistency_score / 100
-                }
-              };
+        // Fetch Gemini analysis in background
+        if (data.metrics) {
+          setGeminiAnalysis(null);
+          setGeminiError(null);
 
-              setAnalysisResult(radarData);
-              setBiasRatios(biasTypeRatios);
-            }
+          fetch("http://localhost:3001/api/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ metrics: data.metrics }),
+          })
+            .then(async (analysisRes) => {
+              const analysisData = await analysisRes.json().catch(() => ({}));
+              if (analysisRes.ok) {
+                setGeminiAnalysis(analysisData);
+              } else {
+                setGeminiError(analysisData?.error || "Failed to generate analysis");
+              }
+            })
+            .catch((err) => {
+              console.error("Gemini analysis error:", err);
+              setGeminiError(err?.message || "Failed to load analysis");
+            });
+        }
 
-            // Show page immediately, don't wait for Gemini
-            setLoading(false);
+        // Fetch coaching comparison
+        const sessionId = data.sessionId || localStorage.getItem('sessionId');
+        const persona = PERSONAS.find(p => p.slug === slug);
+        if (sessionId && persona?.investorId) {
+          setCoachingLoading(true);
+          setCoachingError(null);
 
-            // Fetch Gemini analysis in background
-            if (data.metrics) {
-              setGeminiAnalysis(null);
-              setGeminiError(null);
-              
-              fetch("http://localhost:3001/api/analyze", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ metrics: data.metrics }),
-              })
-                .then(async (analysisRes) => {
-                  const analysisData = await analysisRes.json().catch(() => ({}));
-                  if (analysisRes.ok) {
-                    setGeminiAnalysis(analysisData);
-                  } else {
-                    setGeminiError(analysisData?.error || "Failed to generate analysis");
-                  }
-                })
-                .catch((err) => {
-                  console.error("Gemini analysis error:", err);
-                  setGeminiError(err?.message || "Failed to load analysis");
-                });
-            }
-
-            // Fetch coaching comparison
-            const sessionId = data.sessionId || localStorage.getItem('sessionId');
-            const persona = PERSONAS.find(p => p.slug === slug);
-            if (sessionId && persona?.investorId) {
-              setCoachingLoading(true);
-              setCoachingError(null);
-              
-              fetch(`http://localhost:3001/coach/${sessionId}/${persona.investorId}`)
-                .then(async (coachRes) => {
-                  const coachData = await coachRes.json().catch(() => ({}));
-                  if (coachRes.ok) {
-                    setCoachingData(coachData);
-                  } else {
-                    setCoachingError(coachData?.error || "Failed to generate coaching");
-                  }
-                })
-                .catch((err) => {
-                  console.error("Coaching error:", err);
-                  setCoachingError(err?.message || "Failed to load coaching");
-                })
-                .finally(() => setCoachingLoading(false));
-            }
-          } catch (err: any) {
-            console.error(err);
-            setRawApiData({ error: err.message });
-            setAnalysisResult(null);
-            setBiasRatios(null);
-            setLoading(false);
-          }
-        };
-
-        load();
-
-    }, [slug]);
-
-    if (loading) {
-        return <main className="min-h-screen p-10">Loading profile...</main>;
-    }
-
-    if (!profile) {
-        return <main className="min-h-screen p-10">Profile not found.</main>;
-    }
-
-    const behavioral = rawApiData?.metrics?.behavioral;
-    const overtrading = behavioral?.overtrading;
-    const lossAversion = behavioral?.loss_aversion;
-    const revengeTrading = behavioral?.revenge_trading;
-    const formatNumber = (value: number | null | undefined, digits = 2) =>
-        value == null || Number.isNaN(value) ? "--" : value.toFixed(digits);
-    const formatLabel = (str: string) => {
-        return str
-            .split('_')
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-            .join(' ');
+          fetch(`http://localhost:3001/coach/${sessionId}/${persona.investorId}`)
+            .then(async (coachRes) => {
+              const coachData = await coachRes.json().catch(() => ({}));
+              if (coachRes.ok) {
+                setCoachingData(coachData);
+              } else {
+                setCoachingError(coachData?.error || "Failed to generate coaching");
+              }
+            })
+            .catch((err) => {
+              console.error("Coaching error:", err);
+              setCoachingError(err?.message || "Failed to load coaching");
+            })
+            .finally(() => setCoachingLoading(false));
+        }
+      } catch (err: any) {
+        console.error(err);
+        setRawApiData({ error: err.message });
+        setAnalysisResult(null);
+        setBiasRatios(null);
+        setLoading(false);
+      }
     };
-    const biasLabels: Record<string, string> = {
-        overtrader: "overtrader",
-        loss_aversion: "loss-averse trader",
-        revenge_trader: "revenge trader",
-        calm_trader: "calm trader"
-    };
-    const biasEntries = biasRatios ? Object.entries(biasRatios) : [];
-    const topBias = biasEntries.length
-        ? biasEntries.reduce(
-            (acc, [key, value]) =>
-            value > acc.value ? { key, value } : acc,
-            { key: biasEntries[0][0], value: biasEntries[0][1] }
-        )
-        : null;
-    const topBiasLabel = topBias ? biasLabels[topBias.key] ?? topBias.key : null;
-    const topBiasValue = topBias ? Number(topBias.value.toFixed(1)) : null;
 
-    return (
-        <main className="min-h-screen p-10 max-w-7xl mx-auto">
-        <section className="flex justify-between items-center mb-10">
-            {/* LEFT — Change persona */}
-            <div className="flex flex-col items-start">
-                <span className="text-xs text-gray-500 mb-1">
-                Change persona
-                </span>
+    load();
 
-                <select
-                value={slug}
-                onChange={(e) => router.push(`/profile/${e.target.value}`)}
-                className="
-                    border rounded-lg px-3 py-2 text-sm transition-colors
-                    bg-white text-gray-900 border-gray-300
-                    focus:outline-none focus:ring-2 focus:ring-blue-500
-                    dark:bg-gray-900 dark:text-gray-100 dark:border-gray-700
-                    dark:focus:ring-blue-400
+  }, [slug]);
+
+  if (loading) {
+    return <main className="min-h-screen p-10">Loading profile...</main>;
+  }
+
+  if (!profile) {
+    return <main className="min-h-screen p-10">Profile not found.</main>;
+  }
+
+  const behavioral = rawApiData?.metrics?.behavioral;
+  const overtrading = behavioral?.overtrading;
+  const lossAversion = behavioral?.loss_aversion;
+  const revengeTrading = behavioral?.revenge_trading;
+  const formatNumber = (value: number | null | undefined, digits = 2) =>
+    value == null || Number.isNaN(value) ? "--" : value.toFixed(digits);
+  const formatLabel = (str: any) => {
+    if (typeof str !== "string") return "--";
+
+    return str
+      .split("_")
+      .map(
+        (word) =>
+          word.charAt(0).toUpperCase() +
+          word.slice(1).toLowerCase()
+      )
+      .join(" ");
+  };
+  const biasLabels: Record<string, string> = {
+    overtrader: "overtrader",
+    loss_aversion: "loss-averse trader",
+    revenge_trader: "revenge trader",
+    calm_trader: "calm trader"
+  };
+  const biasEntries = biasRatios ? Object.entries(biasRatios) : [];
+  const topBias = biasEntries.length
+    ? biasEntries.reduce(
+      (acc, [key, value]) =>
+        value > acc.value ? { key, value } : acc,
+      { key: biasEntries[0][0], value: biasEntries[0][1] }
+    )
+    : null;
+  const topBiasLabel = topBias ? biasLabels[topBias.key] ?? topBias.key : null;
+  const topBiasValue = topBias ? Number(topBias.value.toFixed(1)) : null;
+
+
+
+  return (
+    <main className="min-h-screen p-10 max-w-7xl mx-auto">
+      <section className="flex justify-between items-center mb-10">
+        {/* LEFT — Change persona */}
+        <div className="flex flex-col items-start">
+          <span className="text-xs text-[#8A789A] mb-1">
+            Change persona
+          </span>
+
+
+          <select
+            value={slug}
+            onChange={(e) => router.push(`/profile/${e.target.value}`)}
+            className="
+                    w-full appearance-non mt-2 rounded-full
+                    px-1 py-2 cursor-pointer
+                    text-sm bg-[#0c0810] text-white
+                    focus:outline-none focus:ring-0 focus:bg-[#0c0810]
+                    hover:bg-[#1e0237] drop-shadow-[0_0_10px_rgba(192,32,123,0.2)]
+                    hover:drop-shadow-[0_0_15px_rgba(192,32,123,0.3)]
+                    transition-all duration-300 ease-out
                 "
-                >
-                {PERSONAS.map((p) => (
-                    <option key={p.slug} value={p.slug}>
-                    {p.label}
-                    </option>
-                ))}
-                </select>
-            </div>
+          >
+            {PERSONAS.map((p) => (
+              <option key={p.slug} value={p.slug}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </div>
 
-            {/* RIGHT — Home */}
-            <button
-                onClick={() => router.push("/")}
-                className="
-                px-4 py-2 rounded-lg text-sm font-medium
-                border transition-colors
-                bg-white text-gray-900 border-gray-300 hover:bg-gray-100
-                dark:bg-gray-900 dark:text-gray-100 dark:border-gray-700 dark:hover:bg-gray-800
+
+        {/* RIGHT — Home */}
+        <button
+          onClick={() => router.push("/")}
+          className="
+                px-4 py-2 rounded-full text-sm font-medium
+                bg-[#0c0810] text-white hover:bg-[#1e0237]
+                cursor-pointer shadow-[0_0_20px_rgba(192,32,123,0.2)]
+                hover:shadow-[0_0_30px_rgba(192,32,123,0.3)] hover:bg-[#1e0237]
+                transition-all duration-300 ease-out hover:scale-105
                 "
-            >
-            Home
+
+
+        >
+          Home
         </button>
-    </section>
+      </section>
 
 
-        <section className="border rounded-xl p-6 mb-10">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div>
-                <h3 className="text-lg font-semibold mb-2">
-                Bias type ratios
-                </h3>
 
-                {biasRatios ? (
-                <BiasPieChart ratios={biasRatios} showSummary={false} />
-                ) : (
-                <p className="text-sm text-gray-500">
-                    No bias ratio data yet. Upload a CSV first.
-                </p>
-                )}
-            </div>
 
-            <div>
-                <h3 className="text-lg font-semibold mb-2">
-                Bias highlight
-                </h3>
-
-                {topBiasLabel && topBiasValue != null ? (
-                <div className="text-2xl md:text-3xl font-semibold">
-                    You are{" "}
-                    <CountUp
-                    from={0}
-                    to={topBiasValue}
-                    duration={1.4}
-                    className="inline-block text-transparent bg-clip-text bg-gradient-to-r from-amber-500 via-pink-500 to-indigo-600"
-                    />
-                    % a {topBiasLabel}
-                </div>
-                ) : (
-                <p className="text-sm text-gray-600">
-                    Upload data to see your bias highlight.
-                </p>
-                )}
-
-                {geminiAnalysis?.summary ? (
-                <p className="mt-3 text-sm text-gray-600">
-                    {geminiAnalysis.summary}
-                </p>
-                ) : geminiError ? (
-                <p className="mt-3 text-sm text-red-500">
-                    {geminiError}
-                </p>
-                ) : (
-                <p className="mt-3 text-sm text-gray-500 animate-pulse">
-                    Loading AI analysis...
-                </p>
-                )}
-
-                {geminiAnalysis?.suggestions?.length ? (
-                <ul className="mt-3 space-y-1 text-sm text-gray-600 list-disc pl-5">
-                    {geminiAnalysis.suggestions.map((item, idx) => (
-                    <li key={`${idx}-${item}`}>{item}</li>
-                    ))}
-                </ul>
-                ) : null}
-            </div>
-            </div>
-        </section>
-
-        <section className="mt-10 mb-10">
-            <h3 className="text-lg font-semibold mb-4">
-            Bias breakdown
+      <section className="rounded-2xl p-6 mb-10 bg-[#1e0237]/20 hover:shadow-[0_0_30px_rgba(192,32,123,0.15)] transition-all duration-800 ease-out">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div>
+            <h3 className="text-lg font-semibold mb-2">
+              Bias type ratios
             </h3>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="rounded-2xl border p-5">
-                <h4 className="text-base font-semibold mb-2">
-                Over trading
-                </h4>
-                <p className="text-sm text-gray-600">
-                Avg trades/hour: {formatNumber(overtrading?.avg_trades_per_hour)}
-                </p>
-                <p className="text-sm text-gray-600">
-                Max trades/hour: {overtrading?.max_trades_in_one_hour ?? "--"}
-                </p>
-            </div>
 
-            <div className="rounded-2xl border p-5">
-                <h4 className="text-base font-semibold mb-2">
-                Loss aversion
-                </h4>
-                <p className="text-sm text-gray-600">
-                Avg loss: {formatNumber(lossAversion?.avg_abs_loss)}
-                </p>
-                <p className="text-sm text-gray-600">
-                Avg win: {formatNumber(lossAversion?.avg_win)}
-                </p>
-                <p className="text-sm text-gray-600">
-                Disposition ratio: {formatNumber(lossAversion?.disposition_ratio, 3)}
-                </p>
-            </div>
+            {biasRatios ? (
+              <BiasPieChart ratios={biasRatios} showSummary={false} />
+            ) : (
+              <p className="text-sm text-[#8A789A]">
+                No bias ratio data yet. Upload a CSV first.
+              </p>
+            )}
+          </div>
 
-            <div className="rounded-2xl border p-5">
-                <h4 className="text-base font-semibold mb-2">
-                Revenge trading
-                </h4>
-                <p className="text-sm text-gray-600 mb-3">
-                Tilt indicator: <span className={`font-semibold ${revengeTrading?.tilt_indicator_pct && revengeTrading.tilt_indicator_pct > 60 ? 'text-red-600' : ''}`}>
-                    {formatNumber(revengeTrading?.tilt_indicator_pct)}%
-                </span>
-                </p>
-                
-                {revengeTrading?.martingale_stats && Object.keys(revengeTrading.martingale_stats).length > 0 ? (
-                <div className="mt-3">
-                    <p className="text-xs font-semibold text-gray-700 mb-2">Martingale Escalation:</p>
-                    <div className="space-y-1 max-h-48 overflow-y-auto">
-                    {Object.entries(revengeTrading.martingale_stats)
-                        .sort(([a], [b]) => Number(a) - Number(b))
-                        .slice(0, 12)
-                        .map(([streak, avgSize]) => {
-                        const streakNum = Number(streak);
-                        const size = Number(avgSize);
-                        const baselineSize = revengeTrading.martingale_stats[0] || size;
-                        const pctChange = ((size - baselineSize) / baselineSize) * 100;
-                        const isDangerous = Math.abs(pctChange) > 20 && streakNum > 0;
-                        
-                        return (
-                            <div key={streak} className={`text-xs flex justify-between ${isDangerous ? 'text-red-600 font-semibold' : 'text-gray-600'}`}>
-                            <span>
-                                {streakNum === 0 ? 'Baseline' : `After ${streakNum} loss${streakNum > 1 ? 'es' : ''}`}:
-                            </span>
-                            <span>
-                                ${size.toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                                {streakNum > 0 && (
-                                <span className="ml-1">
-                                    ({pctChange > 0 ? '+' : ''}{pctChange.toFixed(0)}%)
-                                </span>
-                                )}
-                            </span>
-                            </div>
-                        );
-                        })}
-                    </div>
+
+          <div>
+            <h3 className="text-lg font-semibold mb-2">
+              Bias highlight
+            </h3>
+
+
+            {topBiasLabel && topBiasValue != null ? (
+              <div className="text-2xl md:text-3xl font-bold">
+                You are{" "}
+                <CountUp
+                  from={0}
+                  to={topBiasValue}
+                  duration={1.4}
+                  className="inline-block text-transparent bg-clip-text bg-gradient-to-r from-[#ffae51] via-[#c0207b] to-[#561667]"
+                />
+                % a {topBiasLabel}
+              </div>
+            ) : (
+              <p className="text-sm text-[#8A789A]">
+                Upload data to see your bias highlight.
+              </p>
+            )}
+
+
+            {geminiAnalysis?.summary ? (
+              <p className="mt-3 text-sm text-[#8A789A]">
+                {geminiAnalysis.summary}
+              </p>
+            ) : geminiError ? (
+              <p className="mt-3 text-sm text-[#8A789A]">
+                {geminiError}
+              </p>
+            ) : (
+              <p className="mt-3 text-sm [#8A789A] animate-pulse">
+                Loading AI analysis...
+              </p>
+            )}
+
+
+            {geminiAnalysis?.suggestions?.length ? (
+              <ul className="mt-3 space-y-1 text-sm text-[#8A789A] list-disc pl-5">
+                {geminiAnalysis.suggestions.map((item, idx) => (
+                  <li key={`${idx}-${item}`}>{item}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        </div>
+      </section>
+
+
+      <section className="mt-10 mb-10">
+        <h3 className="text-2xl font-bold mb-4">
+          Bias breakdown
+        </h3>
+
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="rounded-2xl p-6 bg-[#1e0237]/20 p-5 hover:shadow-[0_0_30px_rgba(192,32,123,0.15)] transition-all duration-800 ease-out">
+            <h4 className="text-base font-semibold mb-2">
+              Over trading
+            </h4>
+            <p className="text-sm text-[#8A789A]">
+              Average trades per hour: {formatNumber(overtrading?.avg_trades_per_hour)}
+            </p>
+            <p className="text-sm text-[#8A789A]">
+              Maximum trades per hour: {overtrading?.max_trades_in_one_hour ?? "--"}
+            </p>
+          </div>
+
+
+          <div className="rounded-2xl p-6 bg-[#1e0237]/20 p-5 hover:shadow-[0_0_30px_rgba(192,32,123,0.15)] transition-all duration-800 ease-out">
+            <h4 className="text-base font-semibold mb-2">
+              Loss aversion
+            </h4>
+            <p className="text-sm text-[#8A789A]">
+              Avg loss: {formatNumber(lossAversion?.avg_abs_loss)}
+            </p>
+            <p className="text-sm text-[#8A789A]">
+              Avg win: {formatNumber(lossAversion?.avg_win)}
+            </p>
+            <p className="text-sm text-[#8A789A]">
+              Disposition ratio: {formatNumber(lossAversion?.disposition_ratio, 3)}
+            </p>
+          </div>
+
+
+          <div className="rounded-2xl p-6 bg-[#1e0237]/20 p-5 hover:shadow-[0_0_30px_rgba(192,32,123,0.15)] transition-all duration-800 ease-out">
+            <h4 className="text-base font-semibold mb-2">
+              Revenge trading
+            </h4>
+            <p className="text-sm text-[#8A789A] mb-3">
+              Tilt indicator: <span className={`font-semibold ${revengeTrading?.tilt_indicator_pct && revengeTrading.tilt_indicator_pct > 60 ? 'text-[#c0207b]' : ''}`}>
+                {formatNumber(revengeTrading?.tilt_indicator_pct)}%
+              </span>
+            </p>
+
+
+            {revengeTrading?.martingale_stats && Object.keys(revengeTrading.martingale_stats).length > 0 ? (
+              <div className="mt-3">
+                <p className="text-xs font-semibold text-[#8A789A] mb-2">Martingale Escalation:</p>
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {Object.entries(revengeTrading.martingale_stats)
+                    .sort(([a], [b]) => Number(a) - Number(b))
+                    .slice(0, 12)
+                    .map(([streak, avgSize]) => {
+                      const streakNum = Number(streak);
+                      const size = Number(avgSize);
+                      const baselineSize = revengeTrading.martingale_stats[0] || size;
+                      const pctChange = ((size - baselineSize) / baselineSize) * 100;
+                      const isDangerous = Math.abs(pctChange) > 20 && streakNum > 0;
+
+
+                      return (
+                        <div key={streak} className={`text-xs flex justify-between ${isDangerous ? 'text-[#c0207b] font-semibold' : 'text-[#4e3f5b]'}`}>
+                          <span>
+                            {streakNum === 0 ? 'Baseline' : `After ${streakNum} loss${streakNum > 1 ? 'es' : ''}`}:
+                          </span>
+                          <span>
+                            ${size.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                            {streakNum > 0 && (
+                              <span className="ml-1">
+                                ({pctChange > 0 ? '+' : ''}{pctChange.toFixed(0)}%)
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                      );
+                    })}
                 </div>
-                ) : (
-                <p className="text-xs text-gray-500 mt-2">No martingale data</p>
-                )}
-            </div>
-            </div>
-        </section>
+              </div>
+            ) : (
+              <p className="text-xs text-gray-500 mt-2">No martingale data</p>
+            )}
+          </div>
+        </div>
+      </section>
+
 
       <section className="grid grid-cols-1 md:grid-cols-2 gap-10">
         {/* LEFT — Persona */}
         <div>
-            <div className="border rounded-xl p-6">
-                <h2 className="text-2xl font-semibold mb-6">
-                Persona profile
-                </h2>
+          <div className="rounded-2xl bg-[#1e0237]/20 p-6 hover:shadow-[0_0_30px_rgba(192,32,123,0.15)] transition-all duration-800 ease-out">
+            <h2 className="text-2xl font-semibold mb-6">
+              Persona profile
+            </h2>
 
-                <div>
-                
+            <div>
 
-                    <div className="border rounded-lg p-4">
-                        <h3 className="text-lg font-semibold mb-2">
-                            Risk & style radar
-                        </h3>
-                        {personaResult && (
-                        <PortfolioRadar
-                            result={personaResult}
-                            label={profile.name}
-                            color="255,159,64"
-                        />
-                        )}
-                    </div>
-                </div>
+              <div className="rounded-xl bg-[#0c0810] p-4">
+                <h3 className="text-lg font-semibold mb-2">
+                  Risk & style radar
+                </h3>
+                {personaResult && (
+                  <PortfolioRadar
+                    result={personaResult}
+                    label={profile.name}
+                  />
+                )}
+              </div>
             </div>
+          </div>
         </div>
 
+
         {/* RIGHT — You */}
-        <div className="border rounded-xl p-6">
+        <div className="rounded-2xl bg-[#1e0237]/20 p-6 hover:shadow-[0_0_30px_rgba(192,32,123,0.15)] transition-all duration-800 ease-out">
           <h2 className="text-2xl font-semibold mb-6">
             Your profile
           </h2>
 
-          <div className="border rounded-lg p-4">
+          <div className="rounded-xl bg-[#0c0810] p-4">
             <h3 className="text-lg font-semibold mb-2">
               Risk & style radar
             </h3>
+
 
             {analysisResult ? (
               <PortfolioRadar
                 result={analysisResult}
                 label="Your trading profile"
-                color="54,162,235"
+
               />
             ) : (
               <p className="text-sm text-gray-500">
@@ -468,11 +497,13 @@ export default function ProfilePage() {
         </div>
       </section>
 
+
       {/* Coaching Comparison Section */}
-      <section className="mt-10 border rounded-xl p-6">
-        <h2 className="text-2xl font-semibold mb-4">
+      <section className="mt-10 rounded-2xl p-6 bg-[#1e0237]/20 p-6 hover:shadow-[0_0_30px_rgba(192,32,123,0.15)] transition-all duration-800 ease-out">
+        <h2 className="text-2xl font-bold mb-4">
           AI Coaching: How to Trade Like {profile?.name}
         </h2>
+
 
         {coachingLoading ? (
           <p className="text-sm text-gray-500 animate-pulse">Loading personalized coaching...</p>
@@ -484,30 +515,32 @@ export default function ProfilePage() {
           <div className="space-y-6">
             {/* Summary */}
             {coachingData.coaching.summary && (
-              <div className="rounded-lg bg-blue-50 p-4">
-                <h3 className="text-base font-semibold mb-2 text-blue-900">Analysis</h3>
-                <p className="text-sm text-blue-800">{coachingData.coaching.summary}</p>
+              <div className="rounded-lg p-4">
+                <h3 className="text-base font-semibold mb-2 text-white ">Analysis</h3>
+                <p className="text-sm text-[#8A789A]">{coachingData.coaching.summary}</p>
               </div>
             )}
+
 
             {/* Alignment Score */}
             {coachingData.comparison?.alignment?.score != null && (
-              <div className="rounded-lg border p-4">
+              <div className="rounded-lg bg-[#0c0810] p-4">
                 <h3 className="text-base font-semibold mb-2">Alignment Score</h3>
-                <div className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-pink-500">
+                <div className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-[#561557] to-[#c0207b]">
                   {Math.round(coachingData.comparison.alignment.score)}%
                 </div>
-                <p className="text-xs text-gray-500 mt-1">How closely your trading matches {profile?.name}</p>
+                <p className="text-xs text-[#8A789A] mt-1">How closely your trading matches {profile?.name}</p>
               </div>
             )}
 
+
             {/* Key Gaps */}
             {coachingData.coaching.keyGaps?.length > 0 && (
-              <div className="rounded-lg border p-4">
+              <div className="rounded-lg  bg-[#0c0810] p-4">
                 <h3 className="text-base font-semibold mb-3">Key Differences</h3>
                 <ul className="space-y-2">
                   {coachingData.coaching.keyGaps.map((gap: any, idx: number) => (
-                    <li key={idx} className="text-sm text-gray-700">
+                    <li key={idx} className="text-sm text-[#8A789A]">
                       <span className="font-medium">{formatLabel(gap.dimension)}:</span> {gap.description}
                     </li>
                   ))}
@@ -515,21 +548,22 @@ export default function ProfilePage() {
               </div>
             )}
 
+
             {/* Action Plan */}
             {coachingData.coaching.actionPlan?.length > 0 && (
-              <div className="rounded-lg border p-4">
+              <div className="rounded-lg bg-[#0c0810] p-4">
                 <h3 className="text-base font-semibold mb-3">Action Plan</h3>
                 <div className="space-y-4">
                   {coachingData.coaching.actionPlan.map((action: any, idx: number) => (
-                    <div key={idx} className="border-l-4 border-blue-500 pl-4">
+                    <div key={idx} className="border-l-4 border-[#c0207b] pl-4">
                       <h4 className="font-medium text-sm mb-1">{action.objective}</h4>
-                      <ul className="list-disc list-inside space-y-1 text-sm text-gray-600">
+                      <ul className="list-disc list-inside space-y-1 text-sm text-[#8A789A]">
                         {action.steps?.map((step: string, sIdx: number) => (
                           <li key={sIdx}>{step}</li>
                         ))}
                       </ul>
                       {action.targetThreshold && (
-                        <p className="text-xs text-gray-500 mt-1">
+                        <p className="text-xs text-[#8A789A] mt-1">
                           Target: {formatLabel(action.metric)} {action.targetThreshold}
                         </p>
                       )}
@@ -539,11 +573,12 @@ export default function ProfilePage() {
               </div>
             )}
 
+
             {/* Guardrails */}
             {coachingData.coaching.guardrails?.length > 0 && (
-              <div className="rounded-lg bg-amber-50 border border-amber-200 p-4">
-                <h3 className="text-base font-semibold mb-2 text-amber-900">Guardrails</h3>
-                <ul className="list-disc list-inside space-y-1 text-sm text-amber-800">
+              <div className="rounded-lg  bg-[#0c0810] p-4">
+                <h3 className="text-base font-semibold mb-2 text-white">Guardrails</h3>
+                <ul className="list-disc list-inside space-y-1 text-sm text-[#8A789A]">
                   {coachingData.coaching.guardrails.map((rule: string, idx: number) => (
                     <li key={idx}>{rule}</li>
                   ))}
@@ -552,19 +587,21 @@ export default function ProfilePage() {
             )}
           </div>
         ) : (
-          <p className="text-sm text-gray-500">Upload trading data to get personalized coaching.</p>
+          <p className="text-sm text-[#8A789A]">Upload trading data to get personalized coaching.</p>
         )}
       </section>
 
-      <section className="mt-10 border rounded-xl p-6">
+
+      {/* <section className="mt-10 border rounded-xl p-6">
         <h2 className="text-lg font-semibold mb-3">
           Raw backend response
         </h2>
 
+
         <pre className="text-xs bg-gray-50 p-4 rounded overflow-auto">
           {JSON.stringify(rawApiData, null, 2)}
         </pre>
-      </section>
+      </section> */}
     </main>
   );
 }
