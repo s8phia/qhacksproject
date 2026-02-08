@@ -20,7 +20,7 @@ function resolvePythonExecutable() {
     }
 
 
-    return process.platform === "win32" ? "py" : "python3";
+    return process.platform === "win32" ? "python" : "python3";
 }
 
 
@@ -28,7 +28,7 @@ function runPythonMetrics(csvPath) {
     return new Promise((resolve, reject) => {
         const scriptPath = path.join(__dirname, "bias_engine.py");
         const pythonExec = resolvePythonExecutable();
-        const proc = spawn(pythonExec, ["-3.12", scriptPath, csvPath]);
+        const proc = spawn(pythonExec, [scriptPath, csvPath]);
 
 
         let stdout = "";
