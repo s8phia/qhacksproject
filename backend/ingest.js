@@ -1,15 +1,27 @@
-import { parse as parseCsv } from "csv-parse/sync";
+import { parse as parseCsv } from "csv-parse";
+import fs from "fs";
+import { Readable } from "stream";
 
-function looksLikeJson(text) {
-  const t = text.trim();
-  return t.startsWith("{") || t.startsWith("[");
+function looksLikeJsonBuffer(buf) {
+  for (let i = 0; i < Math.min(buf.length, 1024); i++) {
+    const ch = String.fromCharCode(buf[i]);
+    if (!/\s/.test(ch)) {
+      return ch === "{" || ch === "[";
+    }
+  }
+  return false;
 }
 
-export function parseUpload(buffer) {
-  const text = buffer.toString("utf8").trim();
-  if (!text) throw new Error("Empty upload");
-  if (looksLikeJson(text)) return parseJson(text);
-  return parseCsvTrades(text);
+export async function parseUpload(buffer, { normalizedPath = null } = {}) {
+  if (!buffer || buffer.length === 0) throw new Error("Empty upload");
+
+  if (looksLikeJsonBuffer(buffer)) {
+    const text = buffer.toString("utf8");
+    const { trades, mode } = parseJson(text);
+    return { trades, mode, normalized: false, dateRange: null, normalizedPath: null };
+  }
+
+  return await parseCsvTrades(buffer, normalizedPath);
 }
 
 // -------- JSON path (your example format)
@@ -65,43 +77,160 @@ function parseJson(text) {
   return { trades, mode: "basic" };
 }
 
-// -------- CSV path (flexible headers; P/L optional)
-function parseCsvTrades(csvText) {
-  const rows = parseCsv(csvText, { columns: true, skip_empty_lines: true, trim: true });
-  if (!rows.length) throw new Error("CSV had no rows");
+function csvCell(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const str = String(value);
+  if (/[",\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+  return str;
+}
 
-  const norm = (k) => k.toLowerCase().replace(/[^a-z0-9]/g, "");
-  const keys = Object.keys(rows[0]);
-  const map = Object.fromEntries(keys.map((k) => [norm(k), k]));
-
-  const pick = (...cands) => cands.map((c) => map[norm(c)]).find(Boolean) ?? null;
-
-  const kTs = pick("timestamp", "time", "date", "order_date", "orderdate", "settlement_date");
-  const kSide = pick("buy/sell", "side", "action", "type");
-  const kAsset = pick("asset", "symbol", "ticker");
-  const kPL = pick("p/l", "pl", "pnl", "profit", "profit_loss", "profitloss", "realizedpnl");
-  const kQty = pick("qty", "quantity");
-  const kNotional = pick("notional", "cash", "cash_cad", "amount");
-
-  if (!kTs || !kAsset) throw new Error("CSV missing Timestamp and Asset/Symbol columns");
-
-  const trades = rows.map((r, i) => {
-    const notionalRaw = kNotional ? r[kNotional] : (r.Notional ?? r.NOTIONAL ?? null);
-    const plRaw = kPL ? r[kPL] : (r["P/L"] ?? r["p/l"] ?? null);
-
+function createCsvWriter(destPath) {
+  if (!destPath) {
     return {
-      tradeId: String(r.TradeId ?? r.TRADE_ID ?? (i + 1)),
-      ts: r[kTs],
-      side: kSide ? String(r[kSide]).toUpperCase() : null,
-      asset: String(r[kAsset]).toUpperCase(),
-      qty: kQty ? r[kQty] : (r.Qty ?? r.QTY ?? null),
-      notional: notionalRaw,
-      pl: plRaw,
-      fees: r.Fees ?? r.FEES ?? null,
-      sourceFormat: "csv",
+      write() {},
+      end: () => Promise.resolve(),
     };
-  });
+  }
 
-  const mode = kPL ? "full" : "basic";
-  return { trades, mode };
+  const stream = fs.createWriteStream(destPath);
+  stream.write("timestamp,side,asset,quantity,entry_price,profit_loss\n");
+
+  return {
+    write(trade) {
+      const entryPrice =
+        Number.isFinite(trade.qty) &&
+        trade.qty !== 0 &&
+        Number.isFinite(trade.notional)
+          ? Math.abs(trade.notional) / Math.abs(trade.qty)
+          : null;
+
+      const tsValue = trade.ts instanceof Date ? trade.ts.toISOString() : trade.ts;
+      const row = [
+        tsValue,
+        trade.side ?? "",
+        trade.asset ?? "",
+        trade.qty ?? "",
+        entryPrice ?? "",
+        trade.pl ?? "",
+      ]
+        .map(csvCell)
+        .join(",") + "\n";
+
+      stream.write(row);
+    },
+    end() {
+      return new Promise((resolve, reject) => {
+        stream.on("finish", resolve);
+        stream.on("error", reject);
+        stream.end();
+      });
+    },
+  };
+}
+
+function numOrNull(val) {
+  if (val === null || val === undefined || val === "") return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
+
+// -------- CSV path (flexible headers; P/L optional) - streaming + single pass normalization
+function parseCsvTrades(buffer, normalizedPath) {
+  return new Promise((resolve, reject) => {
+    const trades = [];
+    const writer = createCsvWriter(normalizedPath);
+
+    let pick = null;
+    let kTs = null;
+    let kSide = null;
+    let kAsset = null;
+    let kPL = null;
+    let kQty = null;
+    let kNotional = null;
+    let mode = "basic";
+
+    let minTs = null;
+    let maxTs = null;
+
+    const parser = parseCsv({
+      columns: true,
+      skip_empty_lines: true,
+      trim: true,
+    });
+
+    parser.on("readable", () => {
+      let record;
+      while ((record = parser.read())) {
+        if (!pick) {
+          const norm = (k) => k.toLowerCase().replace(/[^a-z0-9]/g, "");
+          const keys = Object.keys(record);
+          const map = Object.fromEntries(keys.map((k) => [norm(k), k]));
+          pick = (...cands) => cands.map((c) => map[norm(c)]).find(Boolean) ?? null;
+
+          kTs = pick("timestamp", "time", "date", "order_date", "orderdate", "settlement_date");
+          kSide = pick("buy/sell", "side", "action", "type");
+          kAsset = pick("asset", "symbol", "ticker");
+          kPL = pick("p/l", "pl", "pnl", "profit", "profit_loss", "profitloss", "realizedpnl");
+          kQty = pick("qty", "quantity");
+          kNotional = pick("notional", "cash", "cash_cad", "amount");
+
+          if (!kTs || !kAsset) {
+            parser.destroy(new Error("CSV missing Timestamp and Asset/Symbol columns"));
+            return;
+          }
+          mode = kPL ? "full" : "basic";
+        }
+
+        const tsRaw = record[kTs];
+        const ts = new Date(tsRaw);
+        if (Number.isNaN(ts.valueOf())) continue;
+
+        const trade = {
+          tradeId: String(record.TradeId ?? record.TRADE_ID ?? trades.length + 1),
+          ts,
+          side: kSide ? String(record[kSide]).toUpperCase() : null,
+          asset: record[kAsset] ? String(record[kAsset]).toUpperCase() : null,
+          qty: numOrNull(kQty ? record[kQty] : record.Qty ?? record.QTY ?? null),
+          notional: numOrNull(kNotional ? record[kNotional] : record.Notional ?? record.NOTIONAL ?? null),
+          pl: numOrNull(kPL ? record[kPL] : record["P/L"] ?? record["p/l"] ?? null),
+          fees: record.Fees ?? record.FEES ?? null,
+          sourceFormat: "csv",
+        };
+
+        trades.push(trade);
+        writer.write(trade);
+
+        if (!minTs || ts < minTs) minTs = ts;
+        if (!maxTs || ts > maxTs) maxTs = ts;
+      }
+    });
+
+    parser.on("error", async (err) => {
+      try {
+        await writer.end();
+      } finally {
+        reject(err);
+      }
+    });
+
+    parser.on("end", async () => {
+      try {
+        await writer.end();
+        if (!trades.length) {
+          return reject(new Error("CSV had no rows"));
+        }
+        resolve({
+          trades,
+          mode,
+          normalized: true,
+          dateRange: { minTs, maxTs },
+          normalizedPath: normalizedPath ?? null,
+        });
+      } catch (err) {
+        reject(err);
+      }
+    });
+
+    Readable.from(buffer).pipe(parser);
+  });
 }

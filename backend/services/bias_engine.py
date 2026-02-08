@@ -2,6 +2,7 @@ import sys
 import json
 import pandas as pd
 import numpy as np
+from pandas.api.types import is_datetime64_any_dtype
 
 try:
     from services.ml_classifier import classify_with_ml
@@ -10,6 +11,14 @@ except Exception:
         from ml_classifier import classify_with_ml
     except Exception:
         classify_with_ml = None
+
+
+def stride_sample(df, target_rows):
+    """Downsample while preserving time order for very large datasets."""
+    if len(df) <= target_rows:
+        return df
+    step = int(np.ceil(len(df) / target_rows))
+    return df.iloc[::step].copy()
 
 def safe_mean(series):
     return None if series.empty else float(series.mean())
@@ -23,17 +32,26 @@ def compute_avg_holding_period_days(df):
     if df.empty: return 0.0
     holds = []
     lots_by_asset = {}
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    ts_series = df["timestamp"]
+    if not is_datetime64_any_dtype(ts_series):
+        ts_series = pd.to_datetime(ts_series)
+    if getattr(ts_series.dt, "tz", None) is not None:
+        ts_series = ts_series.dt.tz_localize(None)
+    ts_values = ts_series.dt.to_pydatetime()
 
-    for _, row in df.iterrows():
-        side, asset, ts, qty = str(row.get("side", "")).upper(), row.get("asset"), row.get("timestamp"), float(row.get("quantity", 0))
-        if pd.isna(asset) or pd.isna(ts) or qty <= 0: continue
+    sides = df["side"].astype(str).str.upper().to_numpy()
+    assets = df["asset"].to_numpy()
+    qtys = pd.to_numeric(df["quantity"], errors="coerce").fillna(0).to_numpy()
+
+    for side, asset, ts, qty in zip(sides, assets, ts_values, qtys):
+        if pd.isna(asset) or pd.isna(ts) or qty <= 0:
+            continue
 
         if side == "BUY":
-            lots_by_asset.setdefault(asset, []).append({"ts": ts, "qty": qty})
+            lots_by_asset.setdefault(asset, []).append({"ts": ts, "qty": float(qty)})
         elif side == "SELL":
             queue = lots_by_asset.get(asset, [])
-            remaining = qty
+            remaining = float(qty)
             while remaining > 0 and queue:
                 lot = queue[0]
                 used = min(remaining, lot["qty"])
@@ -41,7 +59,8 @@ def compute_avg_holding_period_days(df):
                 holds.append(days)
                 lot["qty"] -= used
                 remaining -= used
-                if lot["qty"] <= 1e-9: queue.pop(0)
+                if lot["qty"] <= 1e-9:
+                    queue.pop(0)
     return float(np.mean(holds)) if holds else 0.0
 
 def compute_user_portfolio_metrics(df):
@@ -119,7 +138,8 @@ def main():
 
     bias_type_ratios = None
     if use_ml and classify_with_ml is not None:
-        bias_type_ratios = classify_with_ml(df)
+        cls_df = stride_sample(df, 120000)
+        bias_type_ratios = classify_with_ml(cls_df)
 
     # Final Output
     result = {
