@@ -3,6 +3,14 @@ import json
 import pandas as pd
 import numpy as np
 
+try:
+    from services.ml_classifier import classify_with_ml
+except Exception:
+    try:
+        from ml_classifier import classify_with_ml
+    except Exception:
+        classify_with_ml = None
+
 def safe_mean(series):
     return None if series.empty else float(series.mean())
 
@@ -81,7 +89,11 @@ def compute_user_portfolio_metrics(df):
 
 def main():
     if len(sys.argv) < 2: return
-    df = pd.read_csv(sys.argv[1])
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+    use_ml = "--no-ml" not in sys.argv
+    if not args:
+        return
+    df = pd.read_csv(args[0])
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     
     # --- Standard Stats ---
@@ -104,8 +116,13 @@ def main():
     
     martingale_stats = df.groupby('prev_loss_streak')['trade_value'].mean().to_dict()
 
+    bias_type_ratios = None
+    if use_ml and classify_with_ml is not None:
+        bias_type_ratios = classify_with_ml(df)
+
     # Final Output
     result = {
+        "bias_type_ratios": bias_type_ratios,
         "behavioral": {
             "overtrading": {
                 "avg_trades_per_hour": float(trades_per_hour.mean()),

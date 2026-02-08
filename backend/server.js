@@ -12,7 +12,10 @@ import { computeUserMetrics, normalizeMetrics } from "./metrics.js";
 import { getInvestorVector, computeUserVector, alignmentScore } from "./alignment.js";
 
 const app = express();
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 } 
+});
 
 app.get("/health", async (req, res) => {
   try {
