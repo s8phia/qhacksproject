@@ -1,9 +1,10 @@
 import express from "express";
 import multer from "multer";
 import { v4 as uuidv4 } from "uuid";
-import "dotenv/config";
-import fs from "fs";
+import dotenv from "dotenv";
 import path from "path";
+dotenv.config({ path: path.join(process.cwd(), "backend", ".env") });
+import fs from "fs";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import cors from "cors";

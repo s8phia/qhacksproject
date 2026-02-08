@@ -1,5 +1,7 @@
 // gemini_coach.js
-import "dotenv/config";
+import dotenv from "dotenv";
+import path from "path";
+dotenv.config({ path: path.join(process.cwd(), "backend", ".env") });
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const apiKey = process.env.GEMINI_API_KEY;
@@ -48,6 +50,7 @@ async function callOpenRouter(prompt) {
     },
     body: JSON.stringify({
       model: openRouterModel,
+      max_tokens: 1024,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -169,7 +172,7 @@ export async function coachLikeInvestor(payload) {
   }
 
   // Try OpenRouter if Gemini failed with quota/overload or isn't configured
-  if (openRouterKey && (isQuotaError(lastErr) || isOverloadError(lastErr) || !genAI)) {
+  if (openRouterKey) {
     console.log("Attempting OpenRouter fallback for coaching with model:", openRouterModel);
     try {
       const orResult = await callOpenRouter(prompt);
@@ -187,11 +190,24 @@ export async function coachLikeInvestor(payload) {
   return {
     investor: payload?.investor?.displayName || payload?.investor?.investorId || "unknown",
     alignmentScore: payload?.alignment?.score ?? null,
-    summary: "All LLM providers failed for coaching. Please check API keys and quota.",
+    summary: "All LLM providers failed for coaching. Using heuristic plan.",
     keyGaps: payload?.alignment?.gaps || [],
-    actionPlan: [],
-    guardrails: ["Verify OPENROUTER_API_KEY is set", "Wait for Gemini quota reset"],
-    next7Days: [],
+    actionPlan: [
+      {
+        objective: "Cut risk after losses",
+        steps: ["After any loss, reduce next size by 50%", "Take 20-minute cooldown", "Stop after 3 consecutive losses"],
+        metric: "post_loss_risk",
+        targetThreshold: "size <= 0.5x baseline",
+      },
+      {
+        objective: "Reduce trade burstiness",
+        steps: ["Cap to 3 trades/hour", "Pre-plan two trade windows", "Log every impulse trade"],
+        metric: "trades_per_hour",
+        targetThreshold: "<= 3",
+      },
+    ],
+    guardrails: ["Verify OPENROUTER_API_KEY / GEMINI_API_KEY", "Retry when quota resets"],
+    next7Days: [{ day: 1, tasks: ["Set risk caps", "Define trade windows", "Write post-loss rule card"] }],
     error: String(lastErr?.message || lastErr),
   };
 }
