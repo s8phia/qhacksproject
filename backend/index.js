@@ -61,6 +61,8 @@ function normalizeTrades(trades) {
         qty: t.qty == null || t.qty === "" ? null : Number(t.qty),
         notional: t.notional == null || t.notional === "" ? null : Number(t.notional),
         pl: t.pl == null || t.pl === "" ? null : Number(t.pl),
+        entryPrice:
+          t.entryPrice == null || t.entryPrice === "" ? null : Number(t.entryPrice),
       };
     })
     .filter(Boolean);
@@ -101,9 +103,12 @@ function buildNormalizedTradesCsv(trades) {
     const tsValue = t.ts instanceof Date ? t.ts.toISOString() : t.ts;
     const qty = t.qty == null || t.qty === "" ? null : Number(t.qty);
     const notional = t.notional == null || t.notional === "" ? null : Number(t.notional);
-    const entryPrice = Number.isFinite(qty) && qty !== 0 && Number.isFinite(notional)
-      ? Math.abs(notional) / Math.abs(qty)
-      : null;
+    const entryPrice =
+      t.entryPrice != null && t.entryPrice !== "" && Number.isFinite(Number(t.entryPrice))
+        ? Number(t.entryPrice)
+        : Number.isFinite(qty) && qty !== 0 && Number.isFinite(notional)
+          ? Math.abs(notional) / Math.abs(qty)
+          : null;
 
     return [
       tsValue,
@@ -126,9 +131,12 @@ async function writeNormalizedCsvFile(trades, destPath) {
     const tsValue = t.ts instanceof Date ? t.ts.toISOString() : t.ts;
     const qty = t.qty == null || t.qty === "" ? null : Number(t.qty);
     const notional = t.notional == null || t.notional === "" ? null : Number(t.notional);
-    const entryPrice = Number.isFinite(qty) && qty !== 0 && Number.isFinite(notional)
-      ? Math.abs(notional) / Math.abs(qty)
-      : null;
+    const entryPrice =
+      t.entryPrice != null && t.entryPrice !== "" && Number.isFinite(Number(t.entryPrice))
+        ? Number(t.entryPrice)
+        : Number.isFinite(qty) && qty !== 0 && Number.isFinite(notional)
+          ? Math.abs(notional) / Math.abs(qty)
+          : null;
 
     const row = [
       tsValue,
@@ -163,6 +171,96 @@ function dateRangeFromTrades(trades) {
     if (!maxTs || ts > maxTs) maxTs = ts;
   }
   return { minTs, maxTs };
+}
+
+function computeRevengeFallback(trades) {
+  if (!trades || !trades.length) return { martingale_stats: {}, tilt_indicator_pct: 0 };
+
+  // derive entryPrice if missing
+  const withValues = trades.map((t) => {
+    const qty = t.qty == null ? null : Number(t.qty);
+    const notional = t.notional == null ? null : Number(t.notional);
+    const entry =
+      t.entryPrice != null && t.entryPrice !== "" && Number.isFinite(Number(t.entryPrice))
+        ? Number(t.entryPrice)
+        : Number.isFinite(qty) && qty !== 0 && Number.isFinite(notional)
+          ? Math.abs(notional) / Math.abs(qty)
+          : null;
+    return { ...t, qty, notional, entryPrice: entry, plNum: t.pl == null ? null : Number(t.pl) };
+  });
+
+  const tradeValues = withValues.map((t) =>
+    Number.isFinite(t.entryPrice) && Number.isFinite(t.qty) ? t.entryPrice * t.qty : 0
+  );
+  const overallMean =
+    tradeValues.length && tradeValues.some((v) => Number.isFinite(v) && v !== 0)
+      ? tradeValues.reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0) / tradeValues.length
+      : 0;
+
+  // build streaks
+  const isLoss = withValues.map((t) => Number.isFinite(t.plNum) && t.plNum < 0);
+  let streakId = 0;
+  const prevLossStreak = [];
+  for (let i = 0; i < isLoss.length; i++) {
+    if (i === 0) {
+      streakId = isLoss[i] ? 1 : 0;
+      prevLossStreak.push(0);
+      continue;
+    }
+    if (isLoss[i - 1] === isLoss[i]) {
+      streakId = isLoss[i] ? streakId + 1 : 0;
+    } else {
+      streakId = isLoss[i] ? 1 : 0;
+    }
+    prevLossStreak.push(isLoss[i - 1] ? streakId : 0);
+  }
+
+  const buckets = new Map();
+  withValues.forEach((t, idx) => {
+    const streak = prevLossStreak[idx] || 0;
+    const val = tradeValues[idx] || 0;
+    if (!buckets.has(streak)) buckets.set(streak, []);
+    buckets.get(streak).push(val);
+  });
+
+  const martingale_stats = {};
+  for (const [k, arr] of buckets.entries()) {
+    const clean = arr.filter((v) => Number.isFinite(v));
+    martingale_stats[k] = clean.length ? clean.reduce((a, b) => a + b, 0) / clean.length : 0;
+  }
+
+  const base = overallMean || martingale_stats[0] || 0;
+  let tilt_indicator_pct = 0;
+  if (base && martingale_stats[6]) {
+    const ratio = martingale_stats[6] / base;
+    if (Number.isFinite(ratio) && ratio > 0) {
+      const sigmoid = 1 / (1 + Math.exp(-5 * Math.log(ratio)));
+      tilt_indicator_pct = Math.round(sigmoid * 10000) / 100;
+    }
+  }
+
+  return { martingale_stats, tilt_indicator_pct };
+}
+
+function ensureRevenge(metrics, trades) {
+  const revenge = metrics?.behavioral?.revenge_trading;
+  const hasSignal =
+    revenge &&
+    revenge.martingale_stats &&
+    Object.values(revenge.martingale_stats).some((v) => Number.isFinite(Number(v)) && Number(v) !== 0) &&
+    Number.isFinite(revenge.tilt_indicator_pct) &&
+    revenge.tilt_indicator_pct !== 0;
+
+  if (hasSignal) return metrics;
+
+  const fallback = computeRevengeFallback(trades);
+  return {
+    ...(metrics || {}),
+    behavioral: {
+      ...(metrics?.behavioral || {}),
+      revenge_trading: fallback,
+    },
+  };
 }
 
 async function persistSessionToSnowflake({
@@ -321,6 +419,8 @@ app.post("/api/uploads/usertrades", upload.single("file"), async (req, res) => {
       }
 
       metrics = await runPythonMetrics(normalizedPath);
+      metrics = ensureRevenge(metrics, normalized);
+      metrics = ensureRevenge(metrics, normalized);
       if (metrics?.portfolio_metrics) {
         sessionPortfolioMetrics.set(sessionId, metrics.portfolio_metrics);
       }
@@ -343,6 +443,7 @@ app.post("/api/uploads/usertrades", upload.single("file"), async (req, res) => {
       filename: safeName,
       sessionId,
       metrics,
+      normalizedPath,
     };
 
     return res.json(lastUserTradesResult);
@@ -362,7 +463,54 @@ app.get("/api/uploads/usertrades", (req, res) => {
     });
   }
 
-  return res.json(lastUserTradesResult);
+  const maybeRefresh = async () => {
+    const ensurePath = async () => {
+      if (lastUserTradesResult?.normalizedPath && fs.existsSync(lastUserTradesResult.normalizedPath)) {
+        return lastUserTradesResult.normalizedPath;
+      }
+      if (lastUserTradesResult?.sessionId && sessionTrades.has(lastUserTradesResult.sessionId)) {
+        const tmpPath = path.join(RAW_DIR, `${lastUserTradesResult.sessionId}-recalc.csv`);
+        const trades = sessionTrades.get(lastUserTradesResult.sessionId);
+        await writeNormalizedCsvFile(trades, tmpPath);
+        lastUserTradesResult.normalizedPath = tmpPath;
+        return tmpPath;
+      }
+      return null;
+    };
+
+    const normalizedPath = await ensurePath();
+    if (!normalizedPath) return lastUserTradesResult;
+    const revenge = lastUserTradesResult?.metrics?.behavioral?.revenge_trading;
+    const needsRefresh =
+      !revenge ||
+      !revenge.martingale_stats ||
+      Object.values(revenge.martingale_stats).every((v) => Number(v) === 0) ||
+      (revenge.tilt_indicator_pct ?? 0) === 0;
+    if (!needsRefresh) return lastUserTradesResult;
+
+    try {
+      const refreshed = await runPythonMetrics(normalizedPath);
+      const trades = sessionTrades.get(lastUserTradesResult.sessionId);
+      lastUserTradesResult.metrics = ensureRevenge(refreshed, trades);
+    } catch (err) {
+      console.warn("Failed to refresh metrics for last upload:", err?.message || err);
+      // JS fallback so UI still gets revenge stats
+      if (lastUserTradesResult.sessionId && sessionTrades.has(lastUserTradesResult.sessionId)) {
+        const trades = sessionTrades.get(lastUserTradesResult.sessionId);
+        const revengeFallback = computeRevengeFallback(trades);
+        lastUserTradesResult.metrics = {
+          ...(lastUserTradesResult.metrics || {}),
+          behavioral: {
+            ...(lastUserTradesResult.metrics?.behavioral || {}),
+            revenge_trading: revengeFallback,
+          },
+        };
+      }
+    }
+    return lastUserTradesResult;
+  };
+
+  maybeRefresh().then((payload) => res.json(payload));
 });
 
 /**
@@ -390,12 +538,14 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     // Compute portfolio metrics via bias_engine.py for this upload
     let portfolioMetrics = null;
+    let metricsFull = null;
     try {
       const rawName = `${sessionId}-${path.basename(req.file.originalname || "upload.csv")}`;
       const rawPath = path.join(RAW_DIR, rawName);
       await fs.promises.writeFile(rawPath, req.file.buffer);
 
       const pyResult = await runPythonMetrics(normalizedPath);
+      metricsFull = pyResult;
       portfolioMetrics = pyResult?.portfolio_metrics || null;
       if (portfolioMetrics) {
         sessionPortfolioMetrics.set(sessionId, portfolioMetrics);
@@ -426,6 +576,14 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       source: `upload_${mode}`,
       maxInsert: 10000,
     });
+
+    lastUserTradesResult = {
+      ok: true,
+      filename: path.basename(req.file.originalname || "upload.csv"),
+      sessionId,
+      metrics: metricsFull,
+      normalizedPath,
+    };
 
     res.json({
       ok: true,

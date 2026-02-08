@@ -98,11 +98,13 @@ function createCsvWriter(destPath) {
   return {
     write(trade) {
       const entryPrice =
-        Number.isFinite(trade.qty) &&
-        trade.qty !== 0 &&
-        Number.isFinite(trade.notional)
-          ? Math.abs(trade.notional) / Math.abs(trade.qty)
-          : null;
+        trade.entryPrice != null && trade.entryPrice !== "" && Number.isFinite(Number(trade.entryPrice))
+          ? Number(trade.entryPrice)
+          : Number.isFinite(trade.qty) &&
+              trade.qty !== 0 &&
+              Number.isFinite(trade.notional)
+            ? Math.abs(trade.notional) / Math.abs(trade.qty)
+            : null;
 
       const tsValue = trade.ts instanceof Date ? trade.ts.toISOString() : trade.ts;
       const row = [
@@ -147,6 +149,8 @@ function parseCsvTrades(buffer, normalizedPath) {
     let kPL = null;
     let kQty = null;
     let kNotional = null;
+    let kEntryPrice = null;
+    let kExitPrice = null;
     let mode = "basic";
 
     let minTs = null;
@@ -173,6 +177,8 @@ function parseCsvTrades(buffer, normalizedPath) {
           kPL = pick("p/l", "pl", "pnl", "profit", "profit_loss", "profitloss", "realizedpnl");
           kQty = pick("qty", "quantity");
           kNotional = pick("notional", "cash", "cash_cad", "amount");
+          kEntryPrice = pick("entry_price", "price", "avg_price", "price_cad");
+          kExitPrice = pick("exit_price", "sell_price", "avg_exit_price", "exitprice");
 
           if (!kTs || !kAsset) {
             parser.destroy(new Error("CSV missing Timestamp and Asset/Symbol columns"));
@@ -185,13 +191,24 @@ function parseCsvTrades(buffer, normalizedPath) {
         const ts = new Date(tsRaw);
         if (Number.isNaN(ts.valueOf())) continue;
 
+        const rawQty = kQty ? record[kQty] : record.Qty ?? record.QTY ?? null;
+        const rawNotional = kNotional ? record[kNotional] : record.Notional ?? record.NOTIONAL ?? null;
+        const rawEntryPrice = kEntryPrice ? record[kEntryPrice] : null;
+        const rawExitPrice = kExitPrice ? record[kExitPrice] : null;
+        const qtyNum = numOrNull(rawQty);
+        const entryPriceNum = numOrNull(rawEntryPrice) ?? numOrNull(rawExitPrice);
+        const notionalNum =
+          numOrNull(rawNotional) ??
+          (entryPriceNum != null && qtyNum != null ? Math.abs(entryPriceNum * qtyNum) : null);
+
         const trade = {
           tradeId: String(record.TradeId ?? record.TRADE_ID ?? trades.length + 1),
           ts,
           side: kSide ? String(record[kSide]).toUpperCase() : null,
           asset: record[kAsset] ? String(record[kAsset]).toUpperCase() : null,
-          qty: numOrNull(kQty ? record[kQty] : record.Qty ?? record.QTY ?? null),
-          notional: numOrNull(kNotional ? record[kNotional] : record.Notional ?? record.NOTIONAL ?? null),
+          qty: qtyNum,
+          notional: notionalNum,
+          entryPrice: entryPriceNum,
           pl: numOrNull(kPL ? record[kPL] : record["P/L"] ?? record["p/l"] ?? null),
           fees: record.Fees ?? record.FEES ?? null,
           sourceFormat: "csv",
